@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pusoy Tayo</string>
+
+    <!-- ============================================================
+         Facebook Login — REPLACE the 3 placeholder values below with
+         your real ones from https://developers.facebook.com:
+           • facebook_app_id        → Settings ▸ Basic ▸ App ID
+           • facebook_client_token  → Settings ▸ Advanced ▸ Client Token
+           • fb_login_protocol_scheme → literally "fb" + your App ID
+         e.g. App ID 1234567890 → fb_login_protocol_scheme = fb1234567890
+         ============================================================ -->
+    <string name="facebook_app_id">1623253352076646</string>
+    <string name="facebook_client_token">a85ca062f94a022aeae536296de43363</string>
+    <string name="fb_login_protocol_scheme">fb1623253352076646</string>
+</resources>

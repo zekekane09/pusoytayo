@@ -1,0 +1,72 @@
+name: pusoy_tayo
+description: "Pusoy Tayo - Online Multiplayer 13-Card Pusoy"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # State Management
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # Routing
+  go_router: ^14.8.1
+
+  # Network
+  dio: ^5.7.0
+  socket_io_client: ^3.0.2
+
+  # Firebase
+  firebase_core: ^3.13.0
+  firebase_auth: ^5.6.0
+  google_sign_in: ^6.2.2
+  sign_in_with_apple: ^6.1.4
+  flutter_facebook_auth: ^7.1.1
+  firebase_messaging: ^15.2.4
+  firebase_analytics: ^11.4.4
+  firebase_crashlytics: ^4.3.4
+  firebase_storage: ^12.4.4
+
+  # UI / Animation
+  flutter_animate: ^4.5.2
+  cached_network_image: ^3.4.1
+  shimmer: ^3.0.0
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.17
+  lottie: ^3.3.1
+
+  # Utilities
+  freezed_annotation: ^3.0.0
+  json_annotation: ^4.9.0
+  uuid: ^4.5.1
+  intl: ^0.19.0
+  shared_preferences: ^2.3.5
+  flutter_secure_storage: ^9.2.4
+  logger: ^2.5.0
+  equatable: ^2.0.7
+  collection: ^1.19.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.14
+  freezed: ^3.0.0
+  json_serializable: ^6.9.4
+  riverpod_generator: ^2.6.4
+  custom_lint: ^0.7.5
+  riverpod_lint: ^2.6.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/cards/
+    - assets/images/ui/
+    - assets/sounds/

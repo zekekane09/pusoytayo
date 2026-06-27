@@ -1,0 +1,27 @@
+# Flutter
+client/.dart_tool/
+client/.packages
+client/build/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/pubspec.lock
+
+# NestJS
+server/node_modules/
+server/dist/
+server/.env
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Firebase
+**/google-services.json
+**/GoogleService-Info.plist
+**/firebase_options.dart
+**/firebase-service-account.json
