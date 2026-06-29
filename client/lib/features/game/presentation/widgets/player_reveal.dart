@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/features/game/domain/card_model.dart';
 import 'package:pusoy_tayo/features/game/logic/hand_comparator.dart';
@@ -16,6 +17,13 @@ class PlayerRevealTile extends StatelessWidget {
   final bool isBanker;
   final bool isWinner;
 
+  /// How many rows (top→middle→bottom) to reveal so far: 0–3. Used to stage the
+  /// reveal animation; defaults to all three (history / instant view).
+  final int visibleRows;
+
+  /// Which rows this player won, for a winner highlight: [front, middle, back].
+  final List<bool> wonRows;
+
   const PlayerRevealTile({
     super.key,
     required this.name,
@@ -25,6 +33,8 @@ class PlayerRevealTile extends StatelessWidget {
     this.isYou = false,
     this.isBanker = false,
     this.isWinner = false,
+    this.visibleRows = 3,
+    this.wonRows = const [false, false, false],
   });
 
   @override
@@ -95,43 +105,58 @@ class PlayerRevealTile extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          _row('F', arr.front),
-          const SizedBox(height: 3),
-          _row('M', arr.middle),
-          const SizedBox(height: 3),
-          _row('B', arr.back),
+          if (visibleRows >= 1) _row('F', arr.front, wonRows[0]),
+          if (visibleRows >= 2) const SizedBox(height: 3),
+          if (visibleRows >= 2) _row('M', arr.middle, wonRows[1]),
+          if (visibleRows >= 3) const SizedBox(height: 3),
+          if (visibleRows >= 3) _row('B', arr.back, wonRows[2]),
         ],
       ),
     );
   }
 
-  Widget _row(String label, List<PlayingCard> cards) {
+  Widget _row(String label, List<PlayingCard> cards, bool won) {
     final type =
         cards.isEmpty ? '' : HandEvaluator.evaluate(cards).type.displayName;
-    return Row(
-      children: [
-        SizedBox(
-          width: 14,
-          child: Text(label,
-              style: const TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700)),
-        ),
-        for (final c in cards)
-          Padding(
-            padding: const EdgeInsets.only(right: 2),
-            child: CardWidget(card: c, width: 34, height: 48),
+    return Container(
+      decoration: won
+          ? BoxDecoration(
+              color: AppColors.gold.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+            )
+          : null,
+      padding: const EdgeInsets.symmetric(vertical: 1, horizontal: 2),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 14,
+            child: Text(label,
+                style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700)),
           ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            type,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: AppColors.textSecondary, fontSize: 10),
+          for (final c in cards)
+            Padding(
+              padding: const EdgeInsets.only(right: 2),
+              child: CardWidget(card: c, width: 34, height: 48),
+            ),
+          const SizedBox(width: 6),
+          if (won)
+            const Padding(
+              padding: EdgeInsets.only(right: 2),
+              child: Text('🏆', style: TextStyle(fontSize: 11)),
+            ),
+          Expanded(
+            child: Text(
+              type,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  const TextStyle(color: AppColors.textSecondary, fontSize: 10),
+            ),
           ),
-        ),
-      ],
-    );
+        ],
+      ),
+    ).animate(target: 1).fadeIn(duration: 280.ms).slideX(begin: 0.08, end: 0);
   }
 }

@@ -20,12 +20,17 @@ class WalletModel {
       '₱${(cash / 100).toStringAsFixed(2)}';
 
   factory WalletModel.fromJson(Map<String, dynamic> json) {
+    // coins/cash are bigint on the server and arrive as strings.
+    int toInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
     return WalletModel(
-      id: json['id'] as String,
-      userId: json['userId'] as String,
-      coins: json['coins'] as int,
-      cash: json['cash'] as int,
-      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      id: json['id']?.toString() ?? '',
+      userId: json['userId']?.toString() ?? '',
+      coins: toInt(json['coins']),
+      cash: toInt(json['cash']),
+      updatedAt: json['updatedAt'] != null
+          ? DateTime.tryParse(json['updatedAt'].toString()) ?? DateTime.now()
+          : DateTime.now(),
     );
   }
 }

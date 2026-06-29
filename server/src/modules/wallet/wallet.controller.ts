@@ -12,7 +12,16 @@ export class WalletController {
 
   @Get()
   async getWallet(@Req() req: any) {
-    return this.walletService.getWallet(req.user.id);
+    const w = await this.walletService.getWallet(req.user.id);
+    const coins = Number(w.coins);
+    const locked = Number(w.bonusLocked || 0);
+    return {
+      ...w,
+      coins,
+      cash: Number(w.cash),
+      bonusLocked: locked,
+      withdrawable: Math.max(0, coins - locked),
+    };
   }
 
   @Get('transactions')

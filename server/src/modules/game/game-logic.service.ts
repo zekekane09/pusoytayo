@@ -8,13 +8,14 @@ export interface Card {
 export enum HandType {
   HIGH_CARD = 0,
   PAIR = 1,
-  THREE_OF_A_KIND = 2,
-  STRAIGHT = 3,
-  FLUSH = 4,
-  FULL_HOUSE = 5,
-  FOUR_OF_A_KIND = 6,
-  STRAIGHT_FLUSH = 7,
-  ROYAL_FLUSH = 8,
+  TWO_PAIR = 2,
+  THREE_OF_A_KIND = 3,
+  STRAIGHT = 4,
+  FLUSH = 5,
+  FULL_HOUSE = 6,
+  FOUR_OF_A_KIND = 7,
+  STRAIGHT_FLUSH = 8,
+  ROYAL_FLUSH = 9,
 }
 
 export interface HandResult {
@@ -56,6 +57,24 @@ export class GameLogicService {
     return hands;
   }
 
+  /**
+   * Auto-arrange 13 cards into a legal 3/5/5 split (weakest in front), used as
+   * a fallback for players who didn't submit before the timer expired.
+   */
+  autoArrange(cards: Card[]): { front: Card[]; middle: Card[]; back: Card[] } {
+    const sorted = [...cards].sort((a, b) => a.rank - b.rank);
+    const front = sorted.slice(0, 3);
+    let middle = sorted.slice(3, 8);
+    let back = sorted.slice(8, 13);
+    // Ensure back >= middle so the arrangement is valid.
+    if (this.compareHands(this.evaluate(middle), this.evaluate(back)) > 0) {
+      const t = middle;
+      middle = back;
+      back = t;
+    }
+    return { front, middle, back };
+  }
+
   evaluate(cards: Card[]): HandResult {
     const sorted = [...cards].sort((a, b) => {
       if (a.rank !== b.rank) return a.rank - b.rank;
@@ -91,22 +110,37 @@ export class GameLogicService {
     }
 
     if (cards.length === 3) {
-      const ranks = sorted.map((c) => c.rank);
-      if (new Set(ranks).size === 1) {
+      const ranks = sorted.map((c) => c.rank).sort((a, b) => b - a);
+      const counts = this.countRanks(sorted);
+      const maxSuit = Math.max(...sorted.map((c) => SUIT_ORDER[c.suit]));
+
+      if (Object.values(counts).some((v) => v === 3)) {
         return {
           type: HandType.THREE_OF_A_KIND,
           rankValues: [ranks[0]],
+          highSuitValue: maxSuit,
+        };
+      }
+
+      const pairRank = Object.keys(counts).find((r) => counts[r] === 2);
+      if (pairRank) {
+        const pr = parseInt(pairRank);
+        const kicker = ranks.find((r) => r !== pr)!;
+        return {
+          type: HandType.PAIR,
+          rankValues: [pr, kicker],
           highSuitValue: Math.max(
-            ...sorted.map((c) => SUIT_ORDER[c.suit]),
+            ...sorted
+              .filter((c) => c.rank === pr)
+              .map((c) => SUIT_ORDER[c.suit]),
           ),
         };
       }
+
       return {
         type: HandType.HIGH_CARD,
-        rankValues: ranks.sort((a, b) => b - a),
-        highSuitValue: Math.max(
-          ...sorted.map((c) => SUIT_ORDER[c.suit]),
-        ),
+        rankValues: ranks,
+        highSuitValue: maxSuit,
       };
     }
 
@@ -126,7 +160,7 @@ export class GameLogicService {
   private evaluateFive(sorted: Card[]): HandResult {
     const isFlush = sorted.every((c) => c.suit === sorted[0].suit);
     const ranks = sorted.map((c) => c.rank);
-    const isStraight = this.checkStraight(ranks);
+    const isStraight = this.isStraightCards(sorted);
 
     if (isFlush && isStraight) {
       if (
@@ -138,13 +172,13 @@ export class GameLogicService {
       ) {
         return {
           type: HandType.ROYAL_FLUSH,
-          rankValues: [sorted[sorted.length - 1].rank],
+          rankValues: [this.straightHigh(sorted)],
           highSuitValue: SUIT_ORDER[sorted[sorted.length - 1].suit],
         };
       }
       return {
         type: HandType.STRAIGHT_FLUSH,
-        rankValues: [sorted[sorted.length - 1].rank],
+        rankValues: [this.straightHigh(sorted)],
         highSuitValue: SUIT_ORDER[sorted[sorted.length - 1].suit],
       };
     }
@@ -191,8 +225,46 @@ export class GameLogicService {
     if (isStraight) {
       return {
         type: HandType.STRAIGHT,
-        rankValues: [sorted[sorted.length - 1].rank],
+        rankValues: [this.straightHigh(sorted)],
         highSuitValue: SUIT_ORDER[sorted[sorted.length - 1].suit],
+      };
+    }
+
+    const maxSuitOf = (rank: number) =>
+      Math.max(
+        ...sorted.filter((c) => c.rank === rank).map((c) => SUIT_ORDER[c.suit]),
+      );
+    const desc = [...sorted.map((c) => c.rank)].sort((a, b) => b - a);
+
+    const tripRank = Object.keys(counts).find((r) => counts[r] === 3);
+    if (tripRank) {
+      const tr = parseInt(tripRank);
+      return {
+        type: HandType.THREE_OF_A_KIND,
+        rankValues: [tr, ...desc.filter((r) => r !== tr)],
+        highSuitValue: maxSuitOf(tr),
+      };
+    }
+
+    const pairRanks = Object.keys(counts)
+      .filter((r) => counts[r] === 2)
+      .map((r) => parseInt(r))
+      .sort((a, b) => b - a);
+    if (pairRanks.length >= 2) {
+      const [high, low] = pairRanks;
+      const kicker = desc.find((r) => r !== high && r !== low)!;
+      return {
+        type: HandType.TWO_PAIR,
+        rankValues: [high, low, kicker],
+        highSuitValue: maxSuitOf(high),
+      };
+    }
+    if (pairRanks.length === 1) {
+      const pr = pairRanks[0];
+      return {
+        type: HandType.PAIR,
+        rankValues: [pr, ...desc.filter((r) => r !== pr)],
+        highSuitValue: maxSuitOf(pr),
       };
     }
 
@@ -209,6 +281,36 @@ export class GameLogicService {
       if (sorted[i] - sorted[i - 1] !== 1) return false;
     }
     return true;
+  }
+
+  /**
+   * Straights use the natural poker order where "2" is LOW (2-3-4-5-6 is a
+   * straight), even though 2 is the highest card otherwise. The deck stores
+   * "2" as rank 15, so map it back to 2 for sequence checks. Also supports the
+   * Ace-low wheel (A-2-3-4-5).
+   */
+  private straightValues(cards: Card[]): number[] {
+    return cards.map((c) => (c.rank === 15 ? 2 : c.rank)).sort((a, b) => a - b);
+  }
+
+  private isStraightCards(cards: Card[]): boolean {
+    const v = this.straightValues(cards);
+    if (this.checkStraight(v)) return true;
+    if (v.includes(14)) {
+      const w = v.map((x) => (x === 14 ? 1 : x)).sort((a, b) => a - b);
+      if (this.checkStraight(w)) return true;
+    }
+    return false;
+  }
+
+  private straightHigh(cards: Card[]): number {
+    const v = this.straightValues(cards);
+    if (this.checkStraight(v)) return v[v.length - 1];
+    if (v.includes(14)) {
+      const w = v.map((x) => (x === 14 ? 1 : x)).sort((a, b) => a - b);
+      if (this.checkStraight(w)) return w[w.length - 1];
+    }
+    return v[v.length - 1];
   }
 
   private countRanks(cards: Card[]): Record<string, number> {
@@ -298,5 +400,137 @@ export class GameLogicService {
     }
 
     return scores;
+  }
+
+  /**
+   * Banker mode: every player is scored only against the banker (head-to-head).
+   * The banker's score is the mirror of the sum of everyone else's results.
+   * A 3-row sweep ("scoop") is worth 6, otherwise +1 per row won, -1 per lost.
+   */
+  calculateBankerScores(
+    arrangements: {
+      playerId: string;
+      front: Card[];
+      middle: Card[];
+      back: Card[];
+    }[],
+    bankerId: string,
+  ): Record<string, number> {
+    const scores: Record<string, number> = {};
+    for (const a of arrangements) scores[a.playerId] = 0;
+
+    const banker = arrangements.find((a) => a.playerId === bankerId);
+    if (!banker) return scores;
+
+    for (const p of arrangements) {
+      if (p.playerId === bankerId) continue;
+
+      let pWins = 0;
+      let bWins = 0;
+      const rows: [Card[], Card[]][] = [
+        [p.front, banker.front],
+        [p.middle, banker.middle],
+        [p.back, banker.back],
+      ];
+      for (const [hp, hb] of rows) {
+        const cmp = this.compareHands(this.evaluate(hp), this.evaluate(hb));
+        if (cmp > 0) pWins++;
+        else if (cmp < 0) bWins++;
+      }
+
+      let delta: number;
+      if (pWins === 3) delta = 6;
+      else if (bWins === 3) delta = -6;
+      else delta = pWins - bWins;
+
+      scores[p.playerId] += delta;
+      scores[bankerId] -= delta;
+    }
+
+    return scores;
+  }
+
+  /** Single-row winner across all players. Returns null when the row is tied. */
+  rowWinner(hands: { playerId: string; cards: Card[] }[]): string | null {
+    if (hands.length === 0) return null;
+    let best = this.evaluate(hands[0].cards);
+    for (const h of hands) {
+      const r = this.evaluate(h.cards);
+      if (this.compareHands(r, best) > 0) best = r;
+    }
+    const top = hands.filter(
+      (h) => this.compareHands(this.evaluate(h.cards), best) === 0,
+    );
+    return top.length === 1 ? top[0].playerId : null;
+  }
+
+  /**
+   * Central Pot mode: every player antes `bet` into a shared pot. The pot is
+   * split into three equal row shares awarded to each row's winner. Tied rows
+   * are refunded equally to every player. Returns the net chip change per
+   * player (already net of the ante) plus the per-row winners for the reveal.
+   */
+  calculatePotDistribution(
+    arrangements: {
+      playerId: string;
+      front: Card[];
+      middle: Card[];
+      back: Card[];
+    }[],
+    bet: number | Record<string, number>,
+  ): {
+    net: Record<string, number>;
+    pot: number;
+    rowWinners: { front: string | null; middle: string | null; back: string | null };
+  } {
+    const n = arrangements.length;
+    // Antes may be a single flat bet for everyone, or a per-player map (each
+    // player chose their own bet in the betting phase).
+    const ante = (id: string): number =>
+      typeof bet === 'number' ? bet : bet[id] || 0;
+    const pot = arrangements.reduce((sum, a) => sum + ante(a.playerId), 0);
+    // Integer chips only — floor the per-row share and refund the remainder so
+    // the pot is conserved exactly without producing fractional scores.
+    const share = Math.floor(pot / 3);
+
+    const net: Record<string, number> = {};
+    for (const a of arrangements) net[a.playerId] = -ante(a.playerId);
+
+    const rowWinners = {
+      front: this.rowWinner(
+        arrangements.map((a) => ({ playerId: a.playerId, cards: a.front })),
+      ),
+      middle: this.rowWinner(
+        arrangements.map((a) => ({ playerId: a.playerId, cards: a.middle })),
+      ),
+      back: this.rowWinner(
+        arrangements.map((a) => ({ playerId: a.playerId, cards: a.back })),
+      ),
+    };
+
+    let distributed = 0;
+    for (const w of [rowWinners.front, rowWinners.middle, rowWinners.back]) {
+      if (w) {
+        net[w] += share;
+        distributed += share;
+      }
+    }
+
+    // Whatever is left (flooring remainders + tied rows) is refunded as evenly
+    // as possible, with any final odd chips handed out one at a time.
+    let remainder = pot - distributed;
+    if (remainder > 0 && n > 0) {
+      const each = Math.floor(remainder / n);
+      for (const a of arrangements) {
+        net[a.playerId] += each;
+        remainder -= each;
+      }
+      for (let i = 0; i < arrangements.length && remainder > 0; i++) {
+        net[arrangements[i].playerId] += 1;
+        remainder--;
+      }
+    }
+
+    return { net, pot, rowWinners };
   }
 }

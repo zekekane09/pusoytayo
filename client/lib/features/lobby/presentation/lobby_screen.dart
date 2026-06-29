@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:pusoy_tayo/core/constants/socket_events.dart';
+import 'package:pusoy_tayo/core/network/socket_client.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/core/theme/glass_container.dart';
 import 'package:pusoy_tayo/features/lobby/domain/room_model.dart';
+import 'package:pusoy_tayo/features/wallet/data/wallet_provider.dart';
 
 class LobbyScreen extends ConsumerStatefulWidget {
   const LobbyScreen({super.key});
@@ -16,15 +20,274 @@ class LobbyScreen extends ConsumerStatefulWidget {
 class _LobbyScreenState extends ConsumerState<LobbyScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  final List<StreamSubscription> _subs = [];
+  List<RoomModel> _onlineRooms = [];
+  bool _connecting = false;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    // Default to the online (Competitive) tab so rooms others created show up.
+    _tabController = TabController(length: 3, vsync: this, initialIndex: 1);
+    _connectAndList();
+  }
+
+  void _refreshRooms() {
+    ref.read(socketClientProvider).emit(SocketEvents.lobbyList);
+  }
+
+  Future<void> _connectAndList() async {
+    setState(() => _connecting = true);
+    final socket = ref.read(socketClientProvider);
+    await socket.connect();
+    _subs.add(socket.on<dynamic>(SocketEvents.lobbyRoomsList).listen((d) {
+      final list = ((d as Map)['rooms'] as List?) ?? [];
+      if (!mounted) return;
+      setState(() {
+        _connecting = false;
+        _onlineRooms = list.map((r) {
+          final m = (r as Map);
+          return RoomModel(
+            code: m['code'].toString(),
+            status: m['status']?.toString() ?? 'waiting',
+            gameMode: m['gameMode']?.toString() ?? 'classic',
+            betAmount: int.tryParse('${m['betAmount']}') ?? 0,
+            currency: m['currency']?.toString() ?? 'coins',
+            maxPlayers: (m['maxPlayers'] as num?)?.toInt() ?? 4,
+            currentPlayers: (m['currentPlayers'] as num?)?.toInt() ?? 0,
+            createdBy: 'host',
+            hostName: m['hostName']?.toString() ?? 'Host',
+            isPrivate: false,
+            createdAt: DateTime.now(),
+          );
+        }).toList();
+      });
+    }));
+    _subs.add(socket.on<dynamic>(SocketEvents.lobbyRoomCreated).listen((d) {
+      final code = (d as Map)['code']?.toString();
+      if (code != null && mounted) context.go('/online/$code');
+    }));
+    _subs.add(socket.on<dynamic>(SocketEvents.lobbyError).listen((d) {
+      final msg = (d as Map)['message']?.toString() ?? 'Error';
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: AppColors.error),
+        );
+      }
+    }));
+    socket.emit(SocketEvents.lobbyList);
+
+    // Poll periodically so newly created rooms on other devices appear even if
+    // a broadcast was missed (e.g. during a brief reconnect).
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (mounted) _refreshRooms();
+    });
+  }
+
+  void _quickMatch() {
+    final socket = ref.read(socketClientProvider);
+    // Join the first open online room, or create a fresh central-pot room.
+    final open = _onlineRooms
+        .where((r) => !r.isFull && r.status == 'waiting')
+        .toList();
+    if (open.isNotEmpty) {
+      context.go('/online/${open.first.code}');
+    } else {
+      socket.emit(SocketEvents.lobbyCreate,
+          {'gameMode': 'pot', 'betAmount': 0, 'currency': 'coins'});
+    }
+  }
+
+  void _showCreateRoomDialog() {
+    String mode = 'classic'; // classic = Free-for-All
+    int bet = 0;
+    int players = 4;
+    final coins = ref.read(walletProvider).valueOrNull?.coins ?? 0;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          // Banker must cover the worst case: every opponent scooping (×6).
+          // Each player risks only their bet, so the banker covers (players-1)×bet.
+          final liability = mode == 'banker' ? (players - 1) * bet : 0;
+          final canAfford = mode != 'banker' || coins >= liability;
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+                20, 16, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
+            child: SingleChildScrollView(
+              child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Create Room',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 16),
+                const Text('Select Game Mode',
+                    style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                Column(
+                  children: [
+                    for (final m in const [
+                      ('classic', '🎮 Free-for-All',
+                          'Everyone competes against everyone.'),
+                      ('banker', '👑 Banker',
+                          'You are the Banker; everyone plays only against you.'),
+                    ])
+                      InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => setSheet(() => mode = m.$1),
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: mode == m.$1
+                                  ? AppColors.gold
+                                  : AppColors.glassBorder,
+                              width: mode == m.$1 ? 2 : 1,
+                            ),
+                            color: mode == m.$1
+                                ? AppColors.gold.withValues(alpha: 0.08)
+                                : null,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                mode == m.$1
+                                    ? Icons.radio_button_checked
+                                    : Icons.radio_button_unchecked,
+                                color: mode == m.$1
+                                    ? AppColors.gold
+                                    : AppColors.textMuted,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(m.$2,
+                                        style: const TextStyle(
+                                            color: AppColors.textPrimary,
+                                            fontWeight: FontWeight.w700)),
+                                    Text(m.$3,
+                                        style: const TextStyle(
+                                            color: AppColors.textMuted,
+                                            fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text('Players',
+                    style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final n in const [2, 3, 4])
+                      ChoiceChip(
+                        label: Text('$n'),
+                        selected: players == n,
+                        onSelected: (_) => setSheet(() => players = n),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                const Text('Entry (coins)',
+                    style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final b in const [0, 10, 25, 50, 100])
+                      ChoiceChip(
+                        label: Text(b == 0 ? 'Free' : '$b'),
+                        selected: bet == b,
+                        onSelected: (_) => setSheet(() => bet = b),
+                      ),
+                  ],
+                ),
+                if (mode == 'banker' && bet > 0) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    'Your balance: $coins  •  Required bankroll: $liability',
+                    style: TextStyle(
+                        color: canAfford ? AppColors.textMuted : AppColors.error,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
+                  ),
+                  if (!canAfford)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text('Insufficient balance to act as Banker.',
+                          style: TextStyle(
+                              color: AppColors.error,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                ],
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: AppColors.surfaceLight,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: canAfford
+                        ? () {
+                            Navigator.of(ctx).pop();
+                            ref.read(socketClientProvider).emit(
+                              SocketEvents.lobbyCreate,
+                              {
+                                'gameMode': mode,
+                                'betAmount': bet,
+                                'currency': 'coins',
+                                'maxPlayers': players,
+                              },
+                            );
+                          }
+                        : null,
+                    icon: const Icon(Icons.casino_rounded),
+                    label: const Text('Create Room'),
+                  ),
+                ),
+              ],
+            ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
+    for (final s in _subs) {
+      s.cancel();
+    }
     _tabController.dispose();
     super.dispose();
   }
@@ -56,7 +319,13 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen>
                     ),
                   ),
                   const Spacer(),
-                  _OnlineCount(count: 1234),
+                  IconButton(
+                    icon: const Icon(Icons.refresh_rounded,
+                        color: AppColors.textSecondary),
+                    tooltip: 'Refresh rooms',
+                    onPressed: _refreshRooms,
+                  ),
+                  _OnlineCount(count: _onlineRooms.length),
                 ],
               ),
             ).animate().fadeIn(duration: 300.ms),
@@ -80,14 +349,18 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen>
                     child: GradientButton(
                       label: 'Quick Match',
                       icon: Icons.flash_on_rounded,
-                      onPressed: () {},
+                      onPressed: _quickMatch,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  GlassContainer(
-                    padding: const EdgeInsets.all(12),
-                    borderRadius: 12,
-                    child: const Icon(Icons.add, color: AppColors.textPrimary),
+                  GestureDetector(
+                    onTap: _showCreateRoomDialog,
+                    child: GlassContainer(
+                      padding: const EdgeInsets.all(12),
+                      borderRadius: 12,
+                      child:
+                          const Icon(Icons.add, color: AppColors.textPrimary),
+                    ),
                   ),
                 ],
               ),
@@ -97,9 +370,13 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen>
               child: TabBarView(
                 controller: _tabController,
                 children: [
-                  _RoomsList(rooms: _mockRooms('practice')),
-                  _RoomsList(rooms: _mockRooms('competitive')),
-                  _RoomsList(rooms: _mockRooms('private')),
+                  _RoomsList(rooms: _mockRooms('practice'), online: false),
+                  _connecting
+                      ? const Center(
+                          child: CircularProgressIndicator(
+                              color: AppColors.primary))
+                      : _RoomsList(rooms: _onlineRooms, online: true),
+                  _RoomsList(rooms: _mockRooms('private'), online: false),
                 ],
               ),
             ),
@@ -169,7 +446,8 @@ class _OnlineCount extends StatelessWidget {
 
 class _RoomsList extends StatelessWidget {
   final List<RoomModel> rooms;
-  const _RoomsList({required this.rooms});
+  final bool online;
+  const _RoomsList({required this.rooms, required this.online});
 
   @override
   Widget build(BuildContext context) {
@@ -193,7 +471,7 @@ class _RoomsList extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       itemCount: rooms.length,
       itemBuilder: (context, index) {
-        return _RoomCard(room: rooms[index])
+        return _RoomCard(room: rooms[index], online: online)
             .animate()
             .fadeIn(delay: (index * 80).ms, duration: 400.ms)
             .slideX(begin: 0.05);
@@ -204,87 +482,104 @@ class _RoomsList extends StatelessWidget {
 
 class _RoomCard extends StatelessWidget {
   final RoomModel room;
-  const _RoomCard({required this.room});
+  final bool online;
+  const _RoomCard({required this.room, required this.online});
 
   @override
   Widget build(BuildContext context) {
+    // The whole row is tappable to enter the room.
+    final onTap = room.isFull
+        ? null
+        : () => context.go('${online ? '/online' : '/game'}/${room.code}');
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: GlassContainer(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                gradient: LinearGradient(
-                  colors: room.isFull
-                      ? [AppColors.error.withValues(alpha: 0.3), AppColors.error.withValues(alpha: 0.1)]
-                      : [AppColors.primary.withValues(alpha: 0.3), AppColors.primary.withValues(alpha: 0.1)],
-                ),
-              ),
-              child: Icon(
-                room.isPrivate ? Icons.lock_rounded : Icons.meeting_room_rounded,
-                color: room.isFull ? AppColors.error : AppColors.primary,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Room ${room.code}',
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    room.betAmount > 0
-                        ? '${room.currency == 'cash' ? '₱' : ''}${room.betAmount} entry'
-                        : 'Free play',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: GlassContainer(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
               children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    color: (room.isBanker
+                            ? AppColors.gold
+                            : AppColors.primary)
+                        .withValues(alpha: 0.2),
+                  ),
+                  child: Icon(
+                    room.isPrivate
+                        ? Icons.lock_rounded
+                        : Icons.meeting_room_rounded,
+                    size: 18,
+                    color: room.isFull
+                        ? AppColors.error
+                        : (room.isBanker
+                            ? AppColors.gold
+                            : AppColors.primary),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Text('Room ${room.code}',
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.textPrimary)),
+                          if (room.betAmount > 0) ...[
+                            const SizedBox(width: 8),
+                            Text('${room.betAmount} entry',
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.gold,
+                                    fontWeight: FontWeight.w600)),
+                          ],
+                        ],
+                      ),
+                      if (online)
+                        Text(
+                          room.isBanker
+                              ? '${room.modeLabel} • ${room.hostName}'
+                              : room.modeLabel,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: room.isBanker
+                                ? AppColors.gold
+                                : AppColors.primary,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
                 Text(
                   '${room.currentPlayers}/${room.maxPlayers}',
                   style: TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.w700,
                     color: room.isFull ? AppColors.error : AppColors.success,
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  room.isFull ? 'Full' : 'Open',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: room.isFull ? AppColors.error : AppColors.success,
-                  ),
+                const SizedBox(width: 8),
+                Icon(
+                  room.isFull ? Icons.block_rounded : Icons.login_rounded,
+                  size: 18,
+                  color: room.isFull ? AppColors.error : AppColors.primary,
                 ),
               ],
             ),
-            if (!room.isFull) ...[
-              const SizedBox(width: 8),
-              IconButton(
-                icon: const Icon(Icons.login_rounded, color: AppColors.primary),
-                onPressed: () => context.go('/game/${room.code}'),
-              ),
-            ],
-          ],
+          ),
         ),
       ),
     );

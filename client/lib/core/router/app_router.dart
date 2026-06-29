@@ -5,6 +5,7 @@ import 'package:pusoy_tayo/core/router/route_names.dart';
 import 'package:pusoy_tayo/features/auth/presentation/auth_controller.dart';
 import 'package:pusoy_tayo/features/auth/presentation/login_screen.dart';
 import 'package:pusoy_tayo/features/game/presentation/game_screen.dart';
+import 'package:pusoy_tayo/features/game/presentation/online_game_screen.dart';
 import 'package:pusoy_tayo/features/home/presentation/home_screen.dart';
 import 'package:pusoy_tayo/features/lobby/presentation/lobby_screen.dart';
 import 'package:pusoy_tayo/features/profile/presentation/profile_screen.dart';
@@ -12,12 +13,19 @@ import 'package:pusoy_tayo/features/wallet/presentation/wallet_screen.dart';
 import 'package:pusoy_tayo/core/widgets/shell_scaffold.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
-  final authState = ref.watch(authControllerProvider);
+  // Build the router ONCE. Recreating it on every auth change (via ref.watch)
+  // rebuilds MaterialApp.router and causes a black flash on login/logout.
+  // Instead we refresh redirects through a listenable and read auth lazily.
+  final refresh = ValueNotifier<int>(0);
+  ref.listen(authControllerProvider, (_, _) => refresh.value++);
+  ref.onDispose(refresh.dispose);
 
   return GoRouter(
     initialLocation: '/home',
+    refreshListenable: refresh,
     redirect: (context, state) {
-      final isLoggedIn = authState.valueOrNull != null;
+      final isLoggedIn =
+          ref.read(authControllerProvider).valueOrNull != null;
       final isLoginRoute = state.matchedLocation == '/login';
 
       if (!isLoggedIn && !isLoginRoute) return '/login';
@@ -77,6 +85,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final roomCode = state.pathParameters['roomCode']!;
           return GameScreen(roomCode: roomCode);
+        },
+      ),
+      GoRoute(
+        path: '/online/:roomCode',
+        builder: (context, state) {
+          final roomCode = state.pathParameters['roomCode']!;
+          return OnlineGameScreen(roomCode: roomCode);
         },
       ),
     ],

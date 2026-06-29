@@ -49,18 +49,37 @@ class HandEvaluator {
   }
 
   static HandResult _evaluateThree(List<PlayingCard> cards) {
-    final ranks = cards.map((c) => c.pusoyRank).toList();
-    if (ranks.toSet().length == 1) {
+    final ranks = cards.map((c) => c.pusoyRank).toList()
+      ..sort((a, b) => b.compareTo(a));
+    final counts = _rankCounts(cards);
+    final maxSuit = cards.map((c) => c.suitValue).reduce((a, b) => a > b ? a : b);
+
+    if (counts.values.any((v) => v == 3)) {
       return HandResult(
         type: HandType.threeOfAKind,
         rankValues: [ranks[0]],
-        highSuitValue: cards.map((c) => c.suitValue).reduce((a, b) => a > b ? a : b),
+        highSuitValue: maxSuit,
       );
     }
+
+    final pairRanks = counts.entries.where((e) => e.value == 2).map((e) => e.key);
+    if (pairRanks.isNotEmpty) {
+      final pr = pairRanks.first;
+      final kicker = ranks.firstWhere((r) => r != pr);
+      return HandResult(
+        type: HandType.pair,
+        rankValues: [pr, kicker],
+        highSuitValue: cards
+            .where((c) => c.pusoyRank == pr)
+            .map((c) => c.suitValue)
+            .reduce((a, b) => a > b ? a : b),
+      );
+    }
+
     return HandResult(
       type: HandType.highCard,
-      rankValues: ranks..sort((a, b) => b.compareTo(a)),
-      highSuitValue: cards.map((c) => c.suitValue).reduce((a, b) => a > b ? a : b),
+      rankValues: ranks,
+      highSuitValue: maxSuit,
     );
   }
 
@@ -107,6 +126,15 @@ class HandEvaluator {
       );
     }
 
+    final trips = _findThreeOfAKind(sorted);
+    if (trips != null) return trips;
+
+    final twoPair = _findTwoPair(sorted);
+    if (twoPair != null) return twoPair;
+
+    final pair = _findPair(sorted);
+    if (pair != null) return pair;
+
     return HandResult(
       type: HandType.highCard,
       rankValues: sorted.map((c) => c.pusoyRank).toList()..sort((a, b) => b.compareTo(a)),
@@ -114,26 +142,107 @@ class HandEvaluator {
     );
   }
 
+  static Map<int, int> _rankCounts(List<PlayingCard> cards) {
+    final m = <int, int>{};
+    for (final c in cards) {
+      m[c.pusoyRank] = (m[c.pusoyRank] ?? 0) + 1;
+    }
+    return m;
+  }
+
+  static int _maxSuitOfRank(List<PlayingCard> cards, int rank) => cards
+      .where((c) => c.pusoyRank == rank)
+      .map((c) => c.suitValue)
+      .reduce((a, b) => a > b ? a : b);
+
+  static HandResult? _findThreeOfAKind(List<PlayingCard> sorted) {
+    final counts = _rankCounts(sorted);
+    final trip = counts.entries.where((e) => e.value == 3).map((e) => e.key);
+    if (trip.isEmpty) return null;
+    final tripRank = trip.first;
+    final kickers = sorted
+        .map((c) => c.pusoyRank)
+        .where((r) => r != tripRank)
+        .toList()
+      ..sort((a, b) => b.compareTo(a));
+    return HandResult(
+      type: HandType.threeOfAKind,
+      rankValues: [tripRank, ...kickers],
+      highSuitValue: _maxSuitOfRank(sorted, tripRank),
+    );
+  }
+
+  static HandResult? _findTwoPair(List<PlayingCard> sorted) {
+    final counts = _rankCounts(sorted);
+    final pairs = counts.entries.where((e) => e.value == 2).map((e) => e.key).toList()
+      ..sort((a, b) => b.compareTo(a));
+    if (pairs.length < 2) return null;
+    final high = pairs[0];
+    final low = pairs[1];
+    final kicker =
+        sorted.map((c) => c.pusoyRank).firstWhere((r) => r != high && r != low);
+    return HandResult(
+      type: HandType.twoPair,
+      rankValues: [high, low, kicker],
+      highSuitValue: _maxSuitOfRank(sorted, high),
+    );
+  }
+
+  static HandResult? _findPair(List<PlayingCard> sorted) {
+    final counts = _rankCounts(sorted);
+    final pairRanks = counts.entries.where((e) => e.value == 2).map((e) => e.key);
+    if (pairRanks.isEmpty) return null;
+    final pr = pairRanks.first;
+    final kickers = sorted
+        .map((c) => c.pusoyRank)
+        .where((r) => r != pr)
+        .toList()
+      ..sort((a, b) => b.compareTo(a));
+    return HandResult(
+      type: HandType.pair,
+      rankValues: [pr, ...kickers],
+      highSuitValue: _maxSuitOfRank(sorted, pr),
+    );
+  }
+
   static bool _isFlush(List<PlayingCard> cards) {
     return cards.every((c) => c.suit == cards[0].suit);
   }
 
-  static bool _isStraight(List<PlayingCard> cards) {
-    final ranks = cards.map((c) => c.pusoyRank).toList()..sort();
+  /// Straights use the natural poker order where the "2" is LOW (2-3-4-5-6 is
+  /// a straight), even though 2 is the highest card for pair/high-card
+  /// comparisons. The deck stores "2" as pusoyRank 15, so map it back to 2 here.
+  static List<int> _straightValues(List<PlayingCard> cards) {
+    return cards.map((c) => c.pusoyRank == 15 ? 2 : c.pusoyRank).toList()
+      ..sort();
+  }
 
-    for (int i = 1; i < ranks.length; i++) {
-      if (ranks[i] - ranks[i - 1] != 1) {
-        // Check A-2-3-4-5 wrap (in Pusoy: 14-15-3-4-5 is NOT valid)
-        // Check 10-J-Q-K-A (10-11-12-13-14 is valid)
-        return false;
-      }
+  static bool _consecutive(List<int> sorted) {
+    for (int i = 1; i < sorted.length; i++) {
+      if (sorted[i] - sorted[i - 1] != 1) return false;
     }
     return true;
   }
 
+  static bool _isStraight(List<PlayingCard> cards) {
+    final v = _straightValues(cards);
+    if (_consecutive(v)) return true;
+    // Ace-low wheel: A-2-3-4-5 (Ace acts as 1).
+    if (v.contains(14)) {
+      final w = v.map((x) => x == 14 ? 1 : x).toList()..sort();
+      if (_consecutive(w)) return true;
+    }
+    return false;
+  }
+
   static int _straightHighCard(List<PlayingCard> cards) {
-    final ranks = cards.map((c) => c.pusoyRank).toList()..sort();
-    return ranks.last;
+    final v = _straightValues(cards);
+    if (_consecutive(v)) return v.last;
+    if (v.contains(14)) {
+      final w = v.map((x) => x == 14 ? 1 : x).toList()..sort();
+      if (_consecutive(w)) return w.last; // 5 for the wheel
+    }
+    return v.last;
   }
 
   static HandResult? _findFourOfAKind(List<PlayingCard> sorted) {

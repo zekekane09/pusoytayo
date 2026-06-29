@@ -9,6 +9,7 @@ class RoomModel {
   final String createdBy;
   final bool isPrivate;
   final DateTime createdAt;
+  final String hostName;
 
   const RoomModel({
     required this.code,
@@ -21,10 +22,20 @@ class RoomModel {
     required this.createdBy,
     this.isPrivate = false,
     required this.createdAt,
+    this.hostName = '',
   });
 
   bool get isFull => currentPlayers >= maxPlayers;
   bool get isWaiting => status == 'waiting';
+  bool get isBanker => gameMode == 'banker';
+  bool get isPot => gameMode == 'pot';
+
+  /// Display label with icon for the game mode.
+  String get modeLabel => isBanker
+      ? '👑 Banker'
+      : isPot
+          ? '🪙 Central Pot'
+          : '🎮 Free-for-All';
 
   factory RoomModel.fromJson(Map<String, dynamic> json) {
     return RoomModel(

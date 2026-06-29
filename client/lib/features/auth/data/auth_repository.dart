@@ -4,6 +4,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:logger/logger.dart';
+import 'package:uuid/uuid.dart';
 import 'package:pusoy_tayo/core/constants/api_endpoints.dart';
 import 'package:pusoy_tayo/core/network/api_client.dart';
 import 'package:pusoy_tayo/features/auth/domain/user_model.dart';
@@ -33,18 +34,35 @@ class AuthRepository {
 
   Stream<User?> get authStateChanges => _firebaseAuth.authStateChanges();
 
+  // Web (type-3) OAuth client id from google-services.json. Supplying it as the
+  // serverClientId guarantees Google returns an idToken (a common cause of
+  // Google sign-in failing on release builds is a null idToken).
+  static const String _googleServerClientId =
+      '990259222446-af4rmk40kq7c63sr6u7vfb48om27c6k0.apps.googleusercontent.com';
+
   Future<UserModel> signInWithGoogle() async {
-    final googleUser = await GoogleSignIn().signIn();
-    if (googleUser == null) throw Exception('Google sign in cancelled');
+    try {
+      final googleUser =
+          await GoogleSignIn(serverClientId: _googleServerClientId).signIn();
+      if (googleUser == null) throw Exception('Google sign in cancelled');
 
-    final googleAuth = await googleUser.authentication;
-    final credential = GoogleAuthProvider.credential(
-      accessToken: googleAuth.accessToken,
-      idToken: googleAuth.idToken,
-    );
+      final googleAuth = await googleUser.authentication;
+      if (googleAuth.idToken == null) {
+        throw Exception(
+            'Google did not return an ID token. Enable the Google provider in '
+            'Firebase Auth and allow your account on the OAuth consent screen.');
+      }
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
 
-    await _firebaseAuth.signInWithCredential(credential);
-    return _authenticateWithBackend();
+      await _firebaseAuth.signInWithCredential(credential);
+      return _authenticateWithBackend();
+    } catch (e) {
+      _logger.e('Google sign-in failed: $e');
+      rethrow;
+    }
   }
 
   Future<UserModel> signInWithFacebook() async {
@@ -103,9 +121,60 @@ class AuthRepository {
     return _authenticateWithBackend();
   }
 
+  /// Username + password login (accounts created by the admin). Skips Firebase
+  /// entirely — goes straight to the backend, like guest.
+  Future<UserModel> signInWithUsername(String username, String password) async {
+    final response = await _apiClient.post(
+      '/auth/login-username',
+      data: {'username': username, 'password': password},
+    );
+    final data = response.data as Map<String, dynamic>;
+    await _apiClient.setTokens(
+      accessToken: data['accessToken'] as String,
+      refreshToken: data['refreshToken'] as String,
+    );
+    return UserModel.fromJson(data['user'] as Map<String, dynamic>);
+  }
+
+  /// Self sign-up with username + password (100 free, locked coins).
+  Future<UserModel> registerWithUsername(
+      String username, String password, String displayName) async {
+    final deviceId = await _apiClient.getDeviceId();
+    final response = await _apiClient.post(
+      '/auth/register-username',
+      data: {
+        'username': username,
+        'password': password,
+        'displayName': displayName,
+        'deviceId': deviceId,
+      },
+    );
+    final data = response.data as Map<String, dynamic>;
+    await _apiClient.setTokens(
+      accessToken: data['accessToken'] as String,
+      refreshToken: data['refreshToken'] as String,
+    );
+    return UserModel.fromJson(data['user'] as Map<String, dynamic>);
+  }
+
   Future<UserModel> signInAsGuest() async {
-    await _firebaseAuth.signInAnonymously();
-    return _authenticateWithBackend();
+    // Guest mode skips Firebase entirely so it works with no provider setup —
+    // it goes straight to the backend's guest path with a unique id.
+    final guestId = const Uuid().v4().replaceAll('-', '');
+    final response = await _apiClient.post(
+      ApiEndpoints.login,
+      data: {
+        'firebaseToken': 'guest_$guestId',
+        'displayName': 'Guest',
+        'isGuest': true,
+      },
+    );
+    final data = response.data as Map<String, dynamic>;
+    await _apiClient.setTokens(
+      accessToken: data['accessToken'] as String,
+      refreshToken: data['refreshToken'] as String,
+    );
+    return UserModel.fromJson(data['user'] as Map<String, dynamic>);
   }
 
   Future<UserModel> _authenticateWithBackend() async {

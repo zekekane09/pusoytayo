@@ -1,6 +1,11 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as admin from 'firebase-admin';
+import * as bcrypt from 'bcryptjs';
 import * as fs from 'fs';
 import { UsersService } from '../users/users.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -76,7 +81,12 @@ export class AuthService {
     let firebaseUid: string;
     let authProvider = 'unknown';
 
-    if (this.firebaseApp) {
+    if (dto.isGuest && dto.firebaseToken?.startsWith('guest_')) {
+      // Guest sessions are not Firebase-backed — trust the unique guest id so
+      // anyone can play without any auth-provider configuration.
+      firebaseUid = dto.firebaseToken;
+      authProvider = 'guest';
+    } else if (this.firebaseApp) {
       try {
         const decoded = await admin.auth().verifyIdToken(dto.firebaseToken);
         firebaseUid = decoded.uid;
@@ -112,6 +122,68 @@ export class AuthService {
     const accessToken = this.jwtService.sign(payload);
     const refreshToken = this.jwtService.sign(payload, { expiresIn: '30d' });
 
+    return { accessToken, refreshToken, user };
+  }
+
+  /**
+   * Self sign-up with username + password. New players get 100 free coins that
+   * are locked (non-withdrawable) until wagered & won.
+   */
+  async registerWithUsername(
+    username: string,
+    password: string,
+    displayName?: string,
+    deviceId?: string,
+  ) {
+    const uname = (username || '').trim().toLowerCase();
+    if (uname.length < 3 || (password || '').length < 4) {
+      throw new BadRequestException(
+        'Username (3+) and password (4+) are required',
+      );
+    }
+    if (await this.usersService.findByUsername(uname)) {
+      throw new BadRequestException('Username already taken');
+    }
+    // One free bonus per device: if this device already made an account, the
+    // new account starts at 0 coins.
+    const alreadyClaimed = deviceId
+      ? await this.usersService.deviceHasAccount(deviceId)
+      : false;
+    const bonus = alreadyClaimed ? 0 : 100;
+
+    const user = await this.usersService.createPasswordUser({
+      username: uname,
+      passwordHash: await bcrypt.hash(password, 10),
+      displayName: (displayName || '').trim() || uname,
+      deviceId: deviceId ?? null,
+    });
+    // Free coins (locked until won) — only for the first account on a device.
+    await this.walletService.ensureWallet(user.id, bonus, bonus);
+    await this.rankingService.ensureRanking(user.id);
+
+    const payload = { sub: user.id, uid: user.firebaseUid };
+    const accessToken = this.jwtService.sign(payload);
+    const refreshToken = this.jwtService.sign(payload, { expiresIn: '30d' });
+    return { accessToken, refreshToken, user };
+  }
+
+  /** Username + password login for accounts created by the admin. */
+  async loginWithUsername(username: string, password: string) {
+    const user = await this.usersService.findByUsername(
+      (username || '').trim().toLowerCase(),
+    );
+    if (!user || !user.passwordHash) {
+      throw new UnauthorizedException('Invalid username or password');
+    }
+    const ok = await bcrypt.compare(password || '', user.passwordHash);
+    if (!ok) throw new UnauthorizedException('Invalid username or password');
+
+    await this.walletService.ensureWallet(user.id);
+    await this.rankingService.ensureRanking(user.id);
+
+    const payload = { sub: user.id, uid: user.firebaseUid };
+    const accessToken = this.jwtService.sign(payload);
+    const refreshToken = this.jwtService.sign(payload, { expiresIn: '30d' });
     return { accessToken, refreshToken, user };
   }
 

@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/core/theme/glass_container.dart';
+import 'package:pusoy_tayo/features/wallet/data/wallet_provider.dart';
 
-class BalanceCard extends StatelessWidget {
+class BalanceCard extends ConsumerWidget {
   const BalanceCard({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final wallet = ref.watch(walletProvider);
+    final coins = wallet.valueOrNull?.formattedCoins ?? '—';
+    final cash = wallet.valueOrNull?.formattedCash ?? '₱0.00';
     return GlassContainer(
       gradient: LinearGradient(
         colors: [
@@ -23,7 +28,7 @@ class BalanceCard extends StatelessWidget {
               Expanded(
                 child: _BalanceItem(
                   label: 'Coins',
-                  amount: '1,000',
+                  amount: coins,
                   icon: Icons.monetization_on_rounded,
                   color: AppColors.coinColor,
                 ),
@@ -36,7 +41,7 @@ class BalanceCard extends StatelessWidget {
               Expanded(
                 child: _BalanceItem(
                   label: 'Cash',
-                  amount: '₱0.00',
+                  amount: cash,
                   icon: Icons.account_balance_wallet_rounded,
                   color: AppColors.cashColor,
                 ),

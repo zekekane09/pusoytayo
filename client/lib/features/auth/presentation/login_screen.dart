@@ -39,16 +39,18 @@ class LoginScreen extends ConsumerWidget {
           ),
         ),
         child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+          child: Builder(
+            builder: (context) {
+              final landscape = MediaQuery.of(context).orientation ==
+                  Orientation.landscape;
+
+              final controls = Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  const _LogoSection(),
-                  const SizedBox(height: 48),
+                  _UsernameLogin(isLoading: authState.isLoading),
+                  const SizedBox(height: 16),
                   _LoginButtons(isLoading: authState.isLoading),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
                   _GuestButton(isLoading: authState.isLoading),
                   // Debug-only: tour the UI without Firebase or the backend.
                   if (kDebugMode) ...[
@@ -66,7 +68,7 @@ class LoginScreen extends ConsumerWidget {
                       ),
                     ),
                   ],
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 20),
                   Text(
                     'By continuing, you agree to our Terms of Service',
                     textAlign: TextAlign.center,
@@ -76,8 +78,44 @@ class LoginScreen extends ConsumerWidget {
                     ),
                   ),
                 ],
-              ),
-            ),
+              );
+
+              if (landscape) {
+                // Logo on the left, login controls on the right so everything
+                // fits on a short landscape screen without scrolling.
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: Row(
+                    children: [
+                      const Expanded(child: Center(child: _LogoSection())),
+                      const SizedBox(width: 32),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 480),
+                            child: controls,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const _LogoSection(),
+                      const SizedBox(height: 48),
+                      controls,
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -163,13 +201,6 @@ class _LoginButtons extends ConsumerWidget {
             color: const Color(0xFFDB4437),
             onTap: isLoading ? null : () => controller.signInWithGoogle(),
           ),
-          const SizedBox(height: 12),
-          _SocialLoginButton(
-            label: 'Continue with Facebook',
-            icon: Icons.facebook_rounded,
-            color: const Color(0xFF1877F2),
-            onTap: isLoading ? null : () => controller.signInWithFacebook(),
-          ),
           if (Platform.isIOS) ...[
             const SizedBox(height: 12),
             _SocialLoginButton(
@@ -180,15 +211,6 @@ class _LoginButtons extends ConsumerWidget {
               onTap: isLoading ? null : () => controller.signInWithApple(),
             ),
           ],
-          const SizedBox(height: 12),
-          _SocialLoginButton(
-            label: 'Continue with Phone',
-            icon: Icons.phone_rounded,
-            color: AppColors.secondary,
-            onTap: isLoading ? null : () {
-              // TODO: Navigate to OTP screen
-            },
-          ),
         ],
       ),
     ).animate().fadeIn(delay: 600.ms, duration: 600.ms).slideY(begin: 0.2, end: 0);
@@ -246,6 +268,118 @@ class _SocialLoginButton extends StatelessWidget {
         ),
         icon: Icon(icon, size: 24),
         label: Text(label, style: const TextStyle(fontSize: 16)),
+      ),
+    );
+  }
+}
+
+class _UsernameLogin extends ConsumerStatefulWidget {
+  final bool isLoading;
+  const _UsernameLogin({required this.isLoading});
+
+  @override
+  ConsumerState<_UsernameLogin> createState() => _UsernameLoginState();
+}
+
+class _UsernameLoginState extends ConsumerState<_UsernameLogin> {
+  final _user = TextEditingController();
+  final _pass = TextEditingController();
+
+  @override
+  void dispose() {
+    _user.dispose();
+    _pass.dispose();
+    _name.dispose();
+    super.dispose();
+  }
+
+  final _name = TextEditingController();
+  bool _signup = false;
+
+  void _submit() {
+    final u = _user.text.trim();
+    final p = _pass.text;
+    if (u.isEmpty || p.isEmpty) return;
+    final ctrl = ref.read(authControllerProvider.notifier);
+    if (_signup) {
+      ctrl.registerWithUsername(u, p, _name.text.trim());
+    } else {
+      ctrl.signInWithUsername(u, p);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassContainer(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _user,
+            enabled: !widget.isLoading,
+            textInputAction: TextInputAction.next,
+            style: const TextStyle(color: AppColors.textPrimary),
+            decoration: const InputDecoration(
+              hintText: 'Username',
+              prefixIcon:
+                  Icon(Icons.person_outline, color: AppColors.textSecondary),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _pass,
+            enabled: !widget.isLoading,
+            obscureText: true,
+            onSubmitted: (_) => _submit(),
+            style: const TextStyle(color: AppColors.textPrimary),
+            decoration: const InputDecoration(
+              hintText: 'Password',
+              prefixIcon:
+                  Icon(Icons.lock_outline, color: AppColors.textSecondary),
+            ),
+          ),
+          if (_signup) ...[
+            const SizedBox(height: 10),
+            TextField(
+              controller: _name,
+              enabled: !widget.isLoading,
+              style: const TextStyle(color: AppColors.textPrimary),
+              decoration: const InputDecoration(
+                hintText: 'Display name (optional)',
+                prefixIcon:
+                    Icon(Icons.badge_outlined, color: AppColors.textSecondary),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton(
+              onPressed: widget.isLoading ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+              child: Text(_signup ? 'Create account' : 'Login',
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700)),
+            ),
+          ),
+          TextButton(
+            onPressed:
+                widget.isLoading ? null : () => setState(() => _signup = !_signup),
+            child: Text(
+              _signup
+                  ? 'Have an account? Log in'
+                  : 'New here? Sign up — 100 free coins',
+              style: const TextStyle(color: AppColors.secondary, fontSize: 13),
+            ),
+          ),
+        ],
       ),
     );
   }

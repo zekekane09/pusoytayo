@@ -38,6 +38,21 @@ class AuthController extends AsyncNotifier<UserModel?> {
     state = await AsyncValue.guard(() => _repo.signInAsGuest());
   }
 
+  Future<void> signInWithUsername(String username, String password) async {
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(
+      () => _repo.signInWithUsername(username, password),
+    );
+  }
+
+  Future<void> registerWithUsername(
+      String username, String password, String displayName) async {
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(
+      () => _repo.registerWithUsername(username, password, displayName),
+    );
+  }
+
   /// Local demo login — bypasses Firebase and the backend so the UI can be
   /// explored offline. Intended for debug builds only (see LoginScreen).
   Future<void> signInAsDemo() async {
@@ -54,7 +69,14 @@ class AuthController extends AsyncNotifier<UserModel?> {
   }
 
   Future<void> signOut() async {
-    await _repo.signOut();
+    // Best-effort: a guest has no Firebase/Google session, so those calls can
+    // throw — never let that block logout. Always end signed-out so the router
+    // redirects to /login.
+    try {
+      await _repo.signOut();
+    } catch (_) {
+      // ignore — local state is cleared below regardless
+    }
     state = const AsyncData(null);
   }
 }

@@ -15,6 +15,112 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authControllerProvider).valueOrNull;
+    final landscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+
+    final modeCards = [
+      GameModeCard(
+        title: 'Quick Match',
+        subtitle: 'Find opponents',
+        icon: Icons.flash_on_rounded,
+        gradient: const [AppColors.primary, AppColors.primaryDark],
+        onTap: () => context.go('/lobby'),
+      ),
+      GameModeCard(
+        title: 'Create Room',
+        subtitle: 'Play with friends',
+        icon: Icons.add_circle_outline_rounded,
+        gradient: const [AppColors.secondary, AppColors.secondaryDark],
+        onTap: () => context.go('/lobby'),
+      ),
+      GameModeCard(
+        title: 'Practice',
+        subtitle: 'Free to play',
+        icon: Icons.school_rounded,
+        gradient: const [AppColors.info, Color(0xFF0091EA)],
+        onTap: () => context.go('/lobby'),
+      ),
+      GameModeCard(
+        title: 'Tournament',
+        subtitle: 'Coming Soon',
+        icon: Icons.emoji_events_rounded,
+        gradient: const [AppColors.accent, Color(0xFFFF8F00)],
+        onTap: () {},
+        disabled: true,
+      ),
+    ];
+
+    if (landscape) {
+      return Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF1A0A3E), AppColors.background],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      children: [
+                        _ProfileHeader(
+                          displayName: user?.displayName ?? 'Player',
+                          avatarUrl: user?.avatarUrl,
+                        ),
+                        const SizedBox(height: 10),
+                        const RankBadge(),
+                        const SizedBox(height: 10),
+                        _QuickActions(),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const BalanceCard(),
+                        const SizedBox(height: 12),
+                        const Text('PLAY NOW',
+                            style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textPrimary,
+                                letterSpacing: 2)),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(child: modeCards[0]),
+                            const SizedBox(width: 8),
+                            Expanded(child: modeCards[1]),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(child: modeCards[2]),
+                            const SizedBox(width: 8),
+                            Expanded(child: modeCards[3]),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
 
     return Container(
       decoration: const BoxDecoration(

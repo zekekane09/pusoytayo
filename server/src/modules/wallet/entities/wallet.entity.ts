@@ -24,6 +24,11 @@ export class Wallet {
   @Column({ type: 'bigint', default: 0 })
   cash: number;
 
+  // Coins that can't be withdrawn until wagered & won (e.g. the free sign-up
+  // bonus). Withdrawable = max(0, coins - bonusLocked).
+  @Column({ name: 'bonus_locked', type: 'bigint', default: 0 })
+  bonusLocked: number;
+
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 

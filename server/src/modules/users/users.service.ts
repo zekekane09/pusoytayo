@@ -18,6 +18,35 @@ export class UsersService {
     return this.userRepo.findOne({ where: { firebaseUid } });
   }
 
+  async findByUsername(username: string): Promise<User | null> {
+    return this.userRepo.findOne({ where: { username } });
+  }
+
+  async createPasswordUser(data: {
+    username: string;
+    passwordHash: string;
+    displayName: string;
+    deviceId?: string | null;
+  }): Promise<User> {
+    const user = this.userRepo.create({
+      firebaseUid: `pwd_${data.username}_${Date.now()}`,
+      username: data.username,
+      passwordHash: data.passwordHash,
+      displayName: data.displayName,
+      authProvider: 'password',
+      isGuest: false,
+      deviceId: data.deviceId ?? null,
+    });
+    return this.userRepo.save(user);
+  }
+
+  /** Has this device already claimed the free sign-up bonus? */
+  async deviceHasAccount(deviceId: string): Promise<boolean> {
+    if (!deviceId) return false;
+    const n = await this.userRepo.count({ where: { deviceId } });
+    return n > 0;
+  }
+
   async upsertFromFirebase(data: {
     firebaseUid: string;
     displayName: string;

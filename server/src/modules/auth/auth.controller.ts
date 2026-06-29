@@ -18,6 +18,29 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
+  @Post('login-username')
+  async loginUsername(@Body() body: { username: string; password: string }) {
+    return this.authService.loginWithUsername(body.username, body.password);
+  }
+
+  @Post('register-username')
+  async registerUsername(
+    @Body()
+    body: {
+      username: string;
+      password: string;
+      displayName?: string;
+      deviceId?: string;
+    },
+  ) {
+    return this.authService.registerWithUsername(
+      body.username,
+      body.password,
+      body.displayName,
+      body.deviceId,
+    );
+  }
+
   @Post('refresh')
   async refresh(@Body() body: { refreshToken: string }) {
     return this.authService.refreshToken(body.refreshToken);

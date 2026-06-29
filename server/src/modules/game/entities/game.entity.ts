@@ -84,6 +84,12 @@ export class GamePlayer {
   @Column({ default: 0 })
   score: number;
 
+  @Column({ name: 'bet', type: 'bigint', default: 0 })
+  bet: number;
+
+  @Column({ name: 'has_bet', default: false })
+  hasBet: boolean;
+
   @Column({ name: 'is_ready', default: false })
   isReady: boolean;
 

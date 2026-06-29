@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:uuid/uuid.dart';
 import 'package:pusoy_tayo/core/constants/api_endpoints.dart';
 
 final apiClientProvider = Provider<ApiClient>((ref) => ApiClient());
@@ -54,7 +55,7 @@ class ApiClient {
       await _storage.write(key: 'access_token', value: newToken);
       return true;
     } catch (_) {
-      await _storage.deleteAll();
+      await clearTokens();
       return false;
     }
   }
@@ -80,10 +81,24 @@ class ApiClient {
   }
 
   Future<void> clearTokens() async {
-    await _storage.deleteAll();
+    // Only clear auth tokens — keep the device id so the one-per-device free
+    // bonus survives logout.
+    await _storage.delete(key: 'access_token');
+    await _storage.delete(key: 'refresh_token');
   }
 
   Future<String?> getAccessToken() => _storage.read(key: 'access_token');
+
+  /// Stable per-install device id (persists across logout). Used to grant the
+  /// free sign-up bonus only once per device.
+  Future<String> getDeviceId() async {
+    var id = await _storage.read(key: 'device_id');
+    if (id == null || id.isEmpty) {
+      id = const Uuid().v4();
+      await _storage.write(key: 'device_id', value: id);
+    }
+    return id;
+  }
 
   Future<Response> get(String path, {Map<String, dynamic>? params}) =>
       _dio.get(path, queryParameters: params);

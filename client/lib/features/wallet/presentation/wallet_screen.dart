@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/core/theme/glass_container.dart';
+import 'package:pusoy_tayo/features/wallet/data/wallet_provider.dart';
 
 class WalletScreen extends StatelessWidget {
   const WalletScreen({super.key});
@@ -129,9 +131,11 @@ class WalletScreen extends StatelessWidget {
   }
 }
 
-class _WalletBalanceCard extends StatelessWidget {
+class _WalletBalanceCard extends ConsumerWidget {
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final wallet = ref.watch(walletProvider);
+    final w = wallet.valueOrNull;
     return GlassContainer(
       gradient: LinearGradient(
         colors: [
@@ -147,9 +151,9 @@ class _WalletBalanceCard extends StatelessWidget {
             style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
           ),
           const SizedBox(height: 8),
-          const Text(
-            '₱0.00',
-            style: TextStyle(
+          Text(
+            w?.formattedCash ?? '₱0.00',
+            style: const TextStyle(
               fontSize: 36,
               fontWeight: FontWeight.w800,
               color: AppColors.textPrimary,
@@ -161,7 +165,7 @@ class _WalletBalanceCard extends StatelessWidget {
               Expanded(
                 child: _MiniBalance(
                   label: 'Coins',
-                  value: '1,000',
+                  value: w?.formattedCoins ?? '—',
                   icon: Icons.monetization_on_rounded,
                   color: AppColors.coinColor,
                 ),
@@ -170,7 +174,7 @@ class _WalletBalanceCard extends StatelessWidget {
               Expanded(
                 child: _MiniBalance(
                   label: 'Cash',
-                  value: '₱0.00',
+                  value: w?.formattedCash ?? '₱0.00',
                   icon: Icons.account_balance_wallet_rounded,
                   color: AppColors.cashColor,
                 ),

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/features/game/domain/card_model.dart';
 import 'package:pusoy_tayo/features/game/domain/game_state_model.dart';
@@ -11,7 +12,7 @@ import 'package:pusoy_tayo/features/game/logic/hand_comparator.dart';
 import 'package:pusoy_tayo/features/game/logic/hand_evaluator.dart';
 import 'package:pusoy_tayo/features/game/presentation/widgets/card_widget.dart';
 import 'package:pusoy_tayo/features/game/presentation/widgets/dealing_overlay.dart';
-import 'package:pusoy_tayo/features/game/presentation/widgets/hand_row.dart';
+import 'package:pusoy_tayo/features/game/presentation/widgets/opponent_fan.dart';
 import 'package:pusoy_tayo/features/game/presentation/widgets/player_reveal.dart';
 import 'package:pusoy_tayo/features/game/presentation/widgets/player_slot.dart';
 import 'package:pusoy_tayo/features/game/presentation/widgets/table_background.dart';
@@ -28,7 +29,6 @@ class GameScreen extends ConsumerStatefulWidget {
 class _GameScreenState extends ConsumerState<GameScreen>
     with TickerProviderStateMixin {
   late GameState _gameState;
-  List<PlayingCard> _selectedCards = [];
   int _timerSeconds = 300; // 5-minute arrangement timer
   Timer? _timer;
   bool _submitted = false;
@@ -41,6 +41,18 @@ class _GameScreenState extends ConsumerState<GameScreen>
   int _round = 1;
   final Map<int, int> _totalScores = {};
 
+  // Betting. Each point won/lost is worth [_betChips] chips. In Central Pot
+  // mode every player antes [_betChips] into a shared pot the round winner
+  // takes. Banker mode lets you raise/lower your stake before the deal locks.
+  static const int _minBet = 5;
+  static const int _maxBet = 200;
+  static const int _betStep = 5;
+  static const int _startingChips = 1000;
+  int _betChips = 10;
+  bool _centralPot = false;
+  final Map<int, int> _balances = {};
+  int _lastPot = 0;
+
   // Reveal + history. Next round only deals once you ready up (bots are always
   // ready), so the loop waits for "all players ready" instead of a timer.
   List<PlayerArrangement> _roundArrangements = [];
@@ -51,7 +63,22 @@ class _GameScreenState extends ConsumerState<GameScreen>
   @override
   void initState() {
     super.initState();
+    _resetBalances();
     _dealRound();
+  }
+
+  void _resetBalances() {
+    _balances.clear();
+    for (int i = 0; i < _playerCount; i++) {
+      _balances[i] = _startingChips;
+    }
+    _lastPot = 0;
+  }
+
+  void _changeBet(int delta) {
+    setState(() {
+      _betChips = (_betChips + delta).clamp(_minBet, _maxBet);
+    });
   }
 
   @override
@@ -79,7 +106,8 @@ class _GameScreenState extends ConsumerState<GameScreen>
 
   void _onTimeUp() {
     if (_submitted) return;
-    if (!_isComplete) _autoArrange();
+    // Out of time: snap to a legal arrangement so we never auto-submit a foul.
+    if (!_isComplete || !_isValidArrangement) _autoArrange();
     _submitArrangement(force: true);
   }
 
@@ -117,7 +145,6 @@ class _GameScreenState extends ConsumerState<GameScreen>
         players: players,
         myCards: myCards,
       );
-      _selectedCards = [];
       _submitted = false;
       _youReady = false;
       _timerSeconds = 300;
@@ -130,8 +157,51 @@ class _GameScreenState extends ConsumerState<GameScreen>
     setState(() {
       _gameState = _gameState.copyWith(phase: GamePhase.arranging);
     });
+    _autoArrange(); // start pre-arranged; the player drags cards to swap them
     _startTimer();
   }
+
+  /// Swap two placed cards (within or across rows). Row sizes are preserved.
+  void _swapCards(PlayingCard a, PlayingCard b) {
+    if (a == b) return;
+    final f = List<PlayingCard>.from(_gameState.frontHand);
+    final m = List<PlayingCard>.from(_gameState.middleHand);
+    final bk = List<PlayingCard>.from(_gameState.backHand);
+    List<PlayingCard>? rowOf(PlayingCard c) => f.contains(c)
+        ? f
+        : m.contains(c)
+            ? m
+            : bk.contains(c)
+                ? bk
+                : null;
+    final ra = rowOf(a);
+    final rb = rowOf(b);
+    if (ra == null || rb == null) return;
+    ra[ra.indexOf(a)] = b;
+    rb[rb.indexOf(b)] = a;
+    setState(() {
+      _gameState =
+          _gameState.copyWith(frontHand: f, middleHand: m, backHand: bk);
+    });
+  }
+
+  /// Swap the whole middle and bottom rows (both 5 cards) — handy when the
+  /// middle is stronger than the bottom.
+  void _swapMiddleBack() {
+    setState(() {
+      _gameState = _gameState.copyWith(
+        middleHand: List<PlayingCard>.from(_gameState.backHand),
+        backHand: List<PlayingCard>.from(_gameState.middleHand),
+      );
+    });
+  }
+
+  bool get _backWeakerThanMiddle =>
+      _gameState.backHand.isNotEmpty &&
+      _gameState.middleHand.isNotEmpty &&
+      HandEvaluator.evaluate(_gameState.backHand)
+              .compareTo(HandEvaluator.evaluate(_gameState.middleHand)) <
+          0;
 
   void _nextRound() {
     _round++;
@@ -144,74 +214,6 @@ class _GameScreenState extends ConsumerState<GameScreen>
     setState(() => _youReady = true);
     Future.delayed(const Duration(milliseconds: 450), () {
       if (mounted && _gameState.phase == GamePhase.comparing) _nextRound();
-    });
-  }
-
-  void _toggleCardSelection(PlayingCard card) {
-    setState(() {
-      if (_selectedCards.contains(card)) {
-        _selectedCards.remove(card);
-      } else {
-        _selectedCards.add(card);
-      }
-    });
-  }
-
-  void _assignToFront() {
-    if (_selectedCards.isEmpty) return;
-    final currentFront = List<PlayingCard>.from(_gameState.frontHand);
-    for (final card in _selectedCards) {
-      if (currentFront.length < 3 && !currentFront.contains(card)) {
-        currentFront.add(card);
-      }
-    }
-    setState(() {
-      _gameState = _gameState.copyWith(frontHand: currentFront);
-      _selectedCards = [];
-    });
-  }
-
-  void _assignToMiddle() {
-    if (_selectedCards.isEmpty) return;
-    final currentMiddle = List<PlayingCard>.from(_gameState.middleHand);
-    for (final card in _selectedCards) {
-      if (currentMiddle.length < 5 && !currentMiddle.contains(card)) {
-        currentMiddle.add(card);
-      }
-    }
-    setState(() {
-      _gameState = _gameState.copyWith(middleHand: currentMiddle);
-      _selectedCards = [];
-    });
-  }
-
-  void _assignToBack() {
-    if (_selectedCards.isEmpty) return;
-    final currentBack = List<PlayingCard>.from(_gameState.backHand);
-    for (final card in _selectedCards) {
-      if (currentBack.length < 5 && !currentBack.contains(card)) {
-        currentBack.add(card);
-      }
-    }
-    setState(() {
-      _gameState = _gameState.copyWith(backHand: currentBack);
-      _selectedCards = [];
-    });
-  }
-
-  void _removeFromHand(PlayingCard card, String hand) {
-    setState(() {
-      switch (hand) {
-        case 'front':
-          final updated = List<PlayingCard>.from(_gameState.frontHand)..remove(card);
-          _gameState = _gameState.copyWith(frontHand: updated);
-        case 'middle':
-          final updated = List<PlayingCard>.from(_gameState.middleHand)..remove(card);
-          _gameState = _gameState.copyWith(middleHand: updated);
-        case 'back':
-          final updated = List<PlayingCard>.from(_gameState.backHand)..remove(card);
-          _gameState = _gameState.copyWith(backHand: updated);
-      }
     });
   }
 
@@ -275,18 +277,6 @@ class _GameScreenState extends ConsumerState<GameScreen>
         middleHand: middle,
         backHand: back,
       );
-      _selectedCards = [];
-    });
-  }
-
-  void _resetArrangement() {
-    setState(() {
-      _gameState = _gameState.copyWith(
-        frontHand: [],
-        middleHand: [],
-        backHand: [],
-      );
-      _selectedCards = [];
     });
   }
 
@@ -347,6 +337,25 @@ class _GameScreenState extends ConsumerState<GameScreen>
       _totalScores[k] = (_totalScores[k] ?? 0) + v;
     });
 
+    // Settle chips. Central Pot: everyone antes, the round winner takes the
+    // whole pot. Otherwise each point is worth [_betChips].
+    int pot = 0;
+    if (_centralPot) {
+      final winner = result.scores.entries
+          .reduce((a, b) => a.value >= b.value ? a : b)
+          .key;
+      pot = _betChips * _playerCount;
+      for (int i = 0; i < _playerCount; i++) {
+        _balances[i] =
+            (_balances[i] ?? _startingChips) - _betChips + (i == winner ? pot : 0);
+      }
+    } else {
+      result.scores.forEach((k, v) {
+        _balances[k] = (_balances[k] ?? _startingChips) + v * _betChips;
+      });
+    }
+    _lastPot = pot;
+
     setState(() {
       _submitted = true;
       _youReady = false;
@@ -373,24 +382,48 @@ class _GameScreenState extends ConsumerState<GameScreen>
     final isReveal = phase == GamePhase.comparing;
     final isDealing = phase == GamePhase.dealing;
 
+    final landscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+
     return Scaffold(
       body: TableBackground(
         child: SafeArea(
           child: Stack(
             children: [
+              // Landscape: opponents sit on the felt behind the arrangement
+              // (more room to arrange), face-down until everyone is ready.
+              if (landscape)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: _opponentsBackground(reveal: isReveal),
+                  ),
+                ),
               Column(
                 children: [
                   _buildTopBar(),
-                  _buildPlayersRow(),
+                  if (!landscape) _buildPlayersRow(),
                   _buildStatusLine(),
+                  if ((_bankerMode || _centralPot) &&
+                      phase == GamePhase.arranging)
+                    _buildBetBar(),
                   const SizedBox(height: 6),
-                  if (isReveal)
+                  if (isReveal && !landscape)
                     Expanded(child: _buildRevealView())
                   else ...[
-                    _buildArrangementArea(),
-                    const Spacer(),
-                    _buildCardFan(),
-                    _buildActionBar(),
+                    // Cards start pre-arranged; drag any card onto another to
+                    // swap them. Once you're Ready your cards shrink to the
+                    // same grouped size as the other players.
+                    Expanded(
+                      child: (isReveal && landscape)
+                          ? Align(
+                              alignment: const Alignment(0, 1.0),
+                              child: _myGroupedFan())
+                          : _buildArrangementArea(),
+                    ),
+                    if (isReveal)
+                      _buildRevealControls()
+                    else
+                      _buildActionBar(),
                   ],
                 ],
               ),
@@ -404,6 +437,107 @@ class _GameScreenState extends ConsumerState<GameScreen>
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Opponents arranged around the felt (landscape). Each shows their 13 cards
+  /// face-down while arranging, flipping face-up once [reveal] is true.
+  Widget _opponentsBackground({required bool reveal}) {
+    final others = <({String name, List<PlayingCard> f, List<PlayingCard> m, List<PlayingCard> b})>[];
+    for (int i = 1; i < _playerCount; i++) {
+      List<PlayingCard> f, m, b;
+      if (reveal && i < _roundArrangements.length) {
+        final a = _roundArrangements[i];
+        f = a.front;
+        m = a.middle;
+        b = a.back;
+      } else {
+        // Face-down placeholder: split their sorted hand into 3 / 5 / 5.
+        final s = List<PlayingCard>.from(_opponentHands[i - 1])..sort();
+        f = s.sublist(0, 3);
+        m = s.sublist(3, 8);
+        b = s.sublist(8, 13);
+      }
+      others.add((name: _gameState.players[i].displayName, f: f, m: m, b: b));
+    }
+    final aligns = switch (others.length) {
+      1 => const [Alignment(0, -0.92)],
+      2 => const [Alignment(-0.92, -0.5), Alignment(0.92, -0.5)],
+      _ => const [
+          Alignment(0, -0.98),
+          Alignment(-0.96, -0.1),
+          Alignment(0.96, -0.1),
+        ],
+    };
+    return Stack(
+      children: [
+        for (int i = 0; i < others.length && i < aligns.length; i++)
+          Align(
+            alignment: aligns[i],
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 300),
+              opacity: reveal ? 1.0 : 0.6,
+              child: OpponentFan(
+                name: others[i].name,
+                front: others[i].f,
+                middle: others[i].m,
+                back: others[i].b,
+                reveal: reveal,
+                scale: reveal ? 1.05 : 0.9,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// My hand shown as the same compact grouped stacks as the opponents (used
+  /// once I'm Ready, so everyone's cards match in size).
+  Widget _myGroupedFan() {
+    return OpponentFan(
+      name: 'You',
+      front: _gameState.frontHand,
+      middle: _gameState.middleHand,
+      back: _gameState.backHand,
+      reveal: true,
+      scale: 1.3,
+    );
+  }
+
+  Widget _buildRevealControls() {
+    final myScore = _roundResult?.scores[0] ?? 0;
+    final txt = myScore > 0
+        ? 'You Win +$myScore'
+        : (myScore < 0 ? 'You Lose $myScore' : 'Even');
+    final col = myScore > 0
+        ? AppColors.success
+        : (myScore < 0 ? AppColors.error : AppColors.warning);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          Text(txt,
+              style: TextStyle(
+                  color: col, fontSize: 16, fontWeight: FontWeight.w800)),
+          const Spacer(),
+          IconButton(
+            onPressed: _openHistory,
+            icon: const Icon(Icons.history_rounded,
+                color: AppColors.textSecondary),
+          ),
+          const SizedBox(width: 4),
+          ElevatedButton.icon(
+            onPressed: _youReady ? null : _readyUp,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF8BC34A),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+            ),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: Text(_youReady ? 'Waiting…' : 'Next'),
+          ),
+        ],
       ),
     );
   }
@@ -448,6 +582,25 @@ class _GameScreenState extends ConsumerState<GameScreen>
             ),
           ),
         ),
+        if (_centralPot && _lastPot > 0)
+          Container(
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.accent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+            ),
+            child: Text(
+              '🪙  Center Pot: $_lastPot chips  →  ${_gameState.players[winnerIdx].displayName}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.accent,
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ).animate().scale(duration: 300.ms, curve: Curves.easeOutBack),
         Container(
           margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -457,7 +610,8 @@ class _GameScreenState extends ConsumerState<GameScreen>
             border: Border.all(color: AppColors.gold.withValues(alpha: 0.4)),
           ),
           child: Text(
-            '🏆  Winner: ${_gameState.players[winnerIdx].displayName}'
+            '💰  ${_gameState.players[0].displayName}: ${_balances[0] ?? _startingChips} chips'
+            '     •     🏆 ${_gameState.players[winnerIdx].displayName}'
             '  (+${result.scores[winnerIdx] ?? 0})',
             textAlign: TextAlign.center,
             style: const TextStyle(
@@ -496,7 +650,7 @@ class _GameScreenState extends ConsumerState<GameScreen>
       child: Row(
         children: [
           OutlinedButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => context.go('/lobby'),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.textSecondary,
               side: const BorderSide(color: AppColors.glassBorder),
@@ -612,7 +766,7 @@ class _GameScreenState extends ConsumerState<GameScreen>
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back_ios, color: AppColors.textPrimary, size: 20),
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => context.go('/lobby'),
           ),
           Expanded(
             child: Column(
@@ -655,26 +809,109 @@ class _GameScreenState extends ConsumerState<GameScreen>
     ).animate().fadeIn(duration: 300.ms);
   }
 
+  Widget _buildBetBar() {
+    final locked = _submitted;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.gold.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.gold.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.casino_rounded, color: AppColors.gold, size: 18),
+          const SizedBox(width: 8),
+          Text(
+            _centralPot ? 'Your ante' : 'Your bet',
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const Spacer(),
+          _betStepButton(Icons.remove_rounded,
+              locked || _betChips <= _minBet ? null : () => _changeBet(-_betStep)),
+          Container(
+            width: 56,
+            alignment: Alignment.center,
+            child: Text(
+              '$_betChips',
+              style: const TextStyle(
+                color: AppColors.gold,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          _betStepButton(Icons.add_rounded,
+              locked || _betChips >= _maxBet ? null : () => _changeBet(_betStep)),
+        ],
+      ),
+    );
+  }
+
+  Widget _betStepButton(IconData icon, VoidCallback? onTap) {
+    return Material(
+      color: onTap == null
+          ? AppColors.surfaceLight
+          : AppColors.gold.withValues(alpha: 0.18),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon,
+              size: 20,
+              color: onTap == null ? AppColors.textMuted : AppColors.gold),
+        ),
+      ),
+    );
+  }
+
   Widget _buildStatusLine() {
-    final myTotal = _totalScores[0] ?? 0;
+    final myChips = _balances[0] ?? _startingChips;
+    final String mode = _centralPot
+        ? '🪙 Central Pot  •  ${_playerCount}P'
+        : _bankerMode
+            ? '👑 Banker: ${_gameState.players[_bankerIndex].displayName}'
+            : 'Free-for-all  •  ${_playerCount}P';
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(
-            _bankerMode
-                ? '👑 Banker: ${_gameState.players[_bankerIndex].displayName}'
-                : 'Free-for-all  •  ${_playerCount}P',
+            mode,
             style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),
-          Text(
-            'Round $_round   •   Total ${myTotal >= 0 ? '+$myTotal' : '$myTotal'}',
-            style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+          Row(
+            children: [
+              const Icon(Icons.monetization_on_rounded,
+                  color: AppColors.gold, size: 14),
+              const SizedBox(width: 4),
+              Text(
+                '$myChips',
+                style: const TextStyle(
+                  color: AppColors.gold,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'R$_round',
+                style:
+                    const TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+            ],
           ),
         ],
       ),
@@ -683,7 +920,9 @@ class _GameScreenState extends ConsumerState<GameScreen>
 
   void _openConfig() {
     int tmpPlayers = _playerCount;
-    bool tmpBanker = _bankerMode;
+    // Table mode: 0 = free-for-all, 1 = banker, 2 = central pot.
+    int tmpMode = _centralPot ? 2 : (_bankerMode ? 1 : 0);
+    int tmpBet = _betChips;
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.surface,
@@ -722,20 +961,57 @@ class _GameScreenState extends ConsumerState<GameScreen>
                     ),
                 ],
               ),
+              const SizedBox(height: 12),
+              const Text('Mode',
+                  style: TextStyle(color: AppColors.textSecondary)),
               const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                activeThumbColor: AppColors.success,
-                title: const Text('Banker Mode',
-                    style: TextStyle(color: AppColors.textPrimary)),
-                subtitle: const Text(
-                  'Everyone plays only against the banker',
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final m in const [
+                    (0, 'Free-for-all'),
+                    (1, 'Banker'),
+                    (2, 'Central Pot'),
+                  ])
+                    ChoiceChip(
+                      label: Text(m.$2),
+                      selected: tmpMode == m.$1,
+                      onSelected: (_) => setSheet(() => tmpMode = m.$1),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                tmpMode == 2
+                    ? 'Everyone antes into a shared pot; the round winner takes it all.'
+                    : tmpMode == 1
+                        ? 'Everyone plays only against the rotating banker.'
+                        : 'Each player scores against every other player.',
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+              if (tmpMode != 0) ...[
+                const SizedBox(height: 14),
+                Text(tmpMode == 2 ? 'Ante (chips)' : 'Bet per point (chips)',
+                    style: const TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final b in const [5, 10, 25, 50, 100])
+                      ChoiceChip(
+                        label: Text('$b'),
+                        selected: tmpBet == b,
+                        onSelected: (_) => setSheet(() => tmpBet = b),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'You can still raise or lower it each round before you submit.',
                   style: TextStyle(color: AppColors.textMuted, fontSize: 12),
                 ),
-                value: tmpBanker,
-                onChanged: (v) => setSheet(() => tmpBanker = v),
-              ),
-              const SizedBox(height: 12),
+              ],
+              const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
@@ -748,10 +1024,13 @@ class _GameScreenState extends ConsumerState<GameScreen>
                     Navigator.of(ctx).pop();
                     setState(() {
                       _playerCount = tmpPlayers;
-                      _bankerMode = tmpBanker;
+                      _bankerMode = tmpMode == 1;
+                      _centralPot = tmpMode == 2;
+                      _betChips = tmpBet.clamp(_minBet, _maxBet);
                       _round = 1;
                       _totalScores.clear();
                       _history.clear();
+                      _resetBalances();
                     });
                     _dealRound();
                   },
@@ -784,130 +1063,203 @@ class _GameScreenState extends ConsumerState<GameScreen>
   }
 
   Widget _buildArrangementArea() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Column(
-        children: [
-          HandRow(
-            label: 'FRONT (Weakest)',
-            maxCards: 3,
-            cards: _gameState.frontHand,
-            onRemoveCard: (card) => _removeFromHand(card, 'front'),
-            labelColor: AppColors.info,
-          ),
-          const SizedBox(height: 6),
-          HandRow(
-            label: 'MIDDLE',
-            maxCards: 5,
-            cards: _gameState.middleHand,
-            onRemoveCard: (card) => _removeFromHand(card, 'middle'),
-            labelColor: AppColors.warning,
-          ),
-          const SizedBox(height: 6),
-          HandRow(
-            label: 'BACK (Strongest)',
-            maxCards: 5,
-            cards: _gameState.backHand,
-            onRemoveCard: (card) => _removeFromHand(card, 'back'),
-            labelColor: AppColors.error,
-          ),
-        ],
+    final front = _gameState.frontHand;
+    final middle = _gameState.middleHand;
+    final back = _gameState.backHand;
+    final midOk = middle.isEmpty ||
+        front.isEmpty ||
+        HandEvaluator.evaluate(middle).compareTo(HandEvaluator.evaluate(front)) >=
+            0;
+    final backOk = back.isEmpty ||
+        middle.isEmpty ||
+        HandEvaluator.evaluate(back).compareTo(HandEvaluator.evaluate(middle)) >=
+            0;
+    return Align(
+      alignment: const Alignment(0, 0.55), // sit low on the table
+      child: LayoutBuilder(
+        builder: (context, box) {
+          // Compact while arranging; the reveal is what gets bigger.
+          final cw = ((box.maxWidth - 130) / 6).clamp(32.0, 48.0).toDouble();
+          final ch = cw * 1.38;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _swapRow(front, const Color(0xFF31C36E), true, cw, ch),
+              const SizedBox(height: 8),
+              _swapRow(middle, const Color(0xFF31C36E), midOk, cw, ch),
+              const SizedBox(height: 8),
+              _swapRow(back, const Color(0xFF8A5A3B), backOk, cw, ch),
+            ],
+          );
+        },
       ),
     ).animate().fadeIn(delay: 200.ms, duration: 400.ms);
   }
 
-  Widget _buildCardFan() {
-    final unassigned = _gameState.unassignedCards;
+  Widget _swapRow(
+      List<PlayingCard> cards, Color border, bool ok, double cw, double ch) {
+    final type =
+        cards.isEmpty ? '' : HandEvaluator.evaluate(cards).type.displayName;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 92,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(ok ? Icons.check_circle : Icons.cancel,
+                  color: ok ? AppColors.success : AppColors.error, size: 26),
+              const SizedBox(height: 2),
+              Text(type,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700)),
+            ],
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: border, width: 2),
+            color: Colors.black.withValues(alpha: 0.12),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final c in cards)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: _swapSlot(c, cw, ch),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 
-    return Container(
-      height: 110,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      child: unassigned.isEmpty
-          ? Center(
-              child: Text(
-                _isComplete ? 'All cards assigned!' : 'No cards remaining',
-                style: const TextStyle(color: AppColors.textMuted),
+  Widget _swapSlot(PlayingCard card, double w, double h) {
+    // AnimatedSwitcher keyed by the card cross-fades/scales when a swap changes
+    // which card sits in this slot, so swaps feel smooth instead of snapping.
+    final cardWidget = AnimatedSwitcher(
+      duration: const Duration(milliseconds: 240),
+      switchInCurve: Curves.easeOut,
+      transitionBuilder: (child, anim) => ScaleTransition(
+        scale: Tween(begin: 0.85, end: 1.0).animate(anim),
+        child: FadeTransition(opacity: anim, child: child),
+      ),
+      child: CardWidget(
+          key: ValueKey(card.toString()), card: card, width: w, height: h),
+    );
+    if (_submitted) return cardWidget;
+    return DragTarget<PlayingCard>(
+      onWillAcceptWithDetails: (d) => d.data != card,
+      onAcceptWithDetails: (d) => _swapCards(d.data, card),
+      builder: (ctx, cand, rej) {
+        final hover = cand.isNotEmpty;
+        return Draggable<PlayingCard>(
+          data: card,
+          dragAnchorStrategy: childDragAnchorStrategy,
+          feedback: _dragFeedback(card, w, h),
+          childWhenDragging: Opacity(opacity: 0.22, child: cardWidget),
+          child: AnimatedScale(
+            duration: const Duration(milliseconds: 120),
+            scale: hover ? 1.06 : 1.0,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: hover ? AppColors.gold : Colors.transparent,
+                  width: 2,
+                ),
               ),
-            )
-          : ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: unassigned.length,
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              itemBuilder: (context, index) {
-                final card = unassigned[index];
-                final isSelected = _selectedCards.contains(card);
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 1),
-                  child: CardWidget(
-                    card: card,
-                    isSelected: isSelected,
-                    width: 55,
-                    height: 78,
-                    onTap: () => _toggleCardSelection(card),
-                  ),
-                ).animate().fadeIn(
-                      delay: (index * 40).ms,
-                      duration: 300.ms,
-                    );
-              },
+              child: cardWidget,
             ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _dragFeedback(PlayingCard card, double w, double h) {
+    return Material(
+      color: Colors.transparent,
+      child: Transform.rotate(
+        angle: 0.04,
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  blurRadius: 14,
+                  offset: const Offset(0, 6)),
+            ],
+          ),
+          child: Transform.scale(
+            scale: 1.12,
+            child: CardWidget(card: card, width: w, height: h),
+          ),
+        ),
+      ),
     );
   }
 
   Widget _buildActionBar() {
+    final valid = _isValidArrangement;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
           _ActionButton(
-            label: 'Auto',
-            icon: Icons.auto_fix_high_rounded,
+            label: 'Reshuffle',
+            icon: Icons.autorenew_rounded,
             onTap: _autoArrange,
           ),
-          const SizedBox(width: 6),
-          _ActionButton(
-            label: 'Reset',
-            icon: Icons.refresh_rounded,
-            onTap: _resetArrangement,
-          ),
-          const SizedBox(width: 6),
-          if (_selectedCards.isNotEmpty) ...[
+          if (_backWeakerThanMiddle && !_submitted) ...[
+            const SizedBox(width: 6),
             _ActionButton(
-              label: 'Front',
-              icon: Icons.arrow_upward,
-              onTap: _assignToFront,
-              color: AppColors.info,
-            ),
-            const SizedBox(width: 4),
-            _ActionButton(
-              label: 'Mid',
-              icon: Icons.remove,
-              onTap: _assignToMiddle,
-              color: AppColors.warning,
-            ),
-            const SizedBox(width: 4),
-            _ActionButton(
-              label: 'Back',
-              icon: Icons.arrow_downward,
-              onTap: _assignToBack,
-              color: AppColors.error,
+              label: 'Swap M/B',
+              icon: Icons.swap_vert_rounded,
+              onTap: _swapMiddleBack,
             ),
           ],
+          if (!valid && !_submitted)
+            const Padding(
+              padding: EdgeInsets.only(left: 10),
+              child: Text('Bottom must be highest',
+                  style: TextStyle(
+                      color: AppColors.error,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700)),
+            ),
           const Spacer(),
           SizedBox(
-            height: 44,
-            child: ElevatedButton.icon(
-              onPressed: (_isComplete && !_submitted) ? _submitArrangement : null,
+            height: 46,
+            child: ElevatedButton(
+              // Can only ready up with a legal arrangement (back ≥ middle ≥
+              // front). Dragging stays free so you can experiment first.
+              onPressed: (_isComplete && !_submitted && valid)
+                  ? _submitArrangement
+                  : null,
               style: ElevatedButton.styleFrom(
-                backgroundColor: (_isComplete && !_submitted)
-                    ? AppColors.success
-                    : AppColors.surfaceLight,
+                backgroundColor: const Color(0xFF8BC34A),
                 foregroundColor: Colors.white,
                 disabledBackgroundColor: AppColors.surfaceLight,
                 disabledForegroundColor: AppColors.textMuted,
+                padding: const EdgeInsets.symmetric(horizontal: 40),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
               ),
-              icon: const Icon(Icons.check_circle, size: 18),
-              label: Text(_submitted ? 'Submitted' : 'Submit'),
+              child: Text(
+                  _submitted ? 'Waiting…' : (valid ? 'Ready' : 'Fix order'),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w800)),
             ),
           ),
         ],
@@ -959,13 +1311,12 @@ class _ActionButton extends StatelessWidget {
   final String label;
   final IconData icon;
   final VoidCallback onTap;
-  final Color? color;
+  final Color? color = null;
 
   const _ActionButton({
     required this.label,
     required this.icon,
     required this.onTap,
-    this.color,
   });
 
   @override

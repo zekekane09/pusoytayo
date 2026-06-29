@@ -1,6 +1,6 @@
 import 'package:pusoy_tayo/features/game/domain/card_model.dart';
 
-enum GamePhase { waiting, dealing, arranging, comparing, finished }
+enum GamePhase { waiting, betting, dealing, arranging, comparing, finished }
 
 class GamePlayer {
   final String id;

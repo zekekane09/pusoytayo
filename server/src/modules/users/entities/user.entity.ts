@@ -27,6 +27,23 @@ export class User {
   @Column({ name: 'auth_provider', length: 20 })
   authProvider: string;
 
+  @Column({
+    name: 'username',
+    type: 'varchar',
+    nullable: true,
+    unique: true,
+    length: 32,
+  })
+  username: string | null;
+
+  @Column({ name: 'password_hash', type: 'varchar', nullable: true, length: 100 })
+  passwordHash: string | null;
+
+  // The device that registered this account — used to grant the free sign-up
+  // bonus only once per device.
+  @Column({ name: 'device_id', type: 'varchar', nullable: true, length: 64 })
+  deviceId: string | null;
+
   @Column({ name: 'phone_number', type: 'varchar', nullable: true, length: 20 })
   phoneNumber: string | null;
 

@@ -3,17 +3,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pusoy_tayo/app.dart';
+import 'package:pusoy_tayo/firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Firebase is optional at boot. Until google-services / firebase_options are
-  // fully wired (and a backend is reachable), initialization can fail — we must
-  // not let that crash the app, so the UI still loads for local/demo use.
+  // Initialize Firebase with explicit options so it never depends on native
+  // auto-init (which failed at runtime → [core/no-app], breaking Google login).
+  // Guest play still works even if this somehow fails.
   try {
-    await Firebase.initializeApp();
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    }
   } catch (e) {
-    debugPrint('Firebase init skipped (not configured yet): $e');
+    debugPrint('Firebase init failed: $e');
   }
 
   SystemChrome.setSystemUIOverlayStyle(
@@ -25,8 +30,8 @@ void main() async {
     ),
   );
 
+  // Locked to landscape — the game is designed for a wide table.
   await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);

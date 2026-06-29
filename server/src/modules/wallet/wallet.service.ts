@@ -18,10 +18,19 @@ export class WalletService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async ensureWallet(userId: string): Promise<Wallet> {
+  async ensureWallet(
+    userId: string,
+    startingCoins = 1000,
+    bonusLocked = 0,
+  ): Promise<Wallet> {
     let wallet = await this.walletRepo.findOne({ where: { userId } });
     if (!wallet) {
-      wallet = this.walletRepo.create({ userId, coins: 1000, cash: 0 });
+      wallet = this.walletRepo.create({
+        userId,
+        coins: startingCoins,
+        cash: 0,
+        bonusLocked,
+      });
       wallet = await this.walletRepo.save(wallet);
 
       await this.txRepo.save(
@@ -29,8 +38,8 @@ export class WalletService {
           walletId: wallet.id,
           type: 'bonus',
           currency: 'coins',
-          amount: 1000,
-          balanceAfter: 1000,
+          amount: startingCoins,
+          balanceAfter: startingCoins,
           description: 'Welcome bonus',
         }),
       );
@@ -132,6 +141,53 @@ export class WalletService {
           description: 'Game winnings',
         }),
       );
+    });
+  }
+
+  /**
+   * Apply a signed balance change in one transaction (positive credits,
+   * negative debits). A debit is clamped to the available balance so a heavy
+   * loss can never push the wallet negative. Returns the amount actually
+   * applied. Used for banker-mode net settlement.
+   */
+  async settle(
+    userId: string,
+    delta: number,
+    currency: 'coins' | 'cash',
+    gameId: string | null,
+  ): Promise<number> {
+    if (delta === 0) return 0;
+    return this.dataSource.transaction(async (manager) => {
+      const wallet = await manager.findOne(Wallet, {
+        where: { userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!wallet) throw new NotFoundException('Wallet not found');
+
+      const balance = Number(currency === 'coins' ? wallet.coins : wallet.cash);
+      const applied = delta < 0 ? -Math.min(balance, -delta) : delta;
+
+      if (currency === 'coins') {
+        wallet.coins = balance + applied;
+      } else {
+        wallet.cash = balance + applied;
+      }
+      await manager.save(Wallet, wallet);
+
+      const newBalance = currency === 'coins' ? wallet.coins : wallet.cash;
+      await manager.save(
+        Transaction,
+        manager.create(Transaction, {
+          walletId: wallet.id,
+          type: applied >= 0 ? 'win' : 'bet',
+          currency,
+          amount: applied,
+          balanceAfter: newBalance,
+          referenceId: gameId,
+          description: 'Banker settlement',
+        }),
+      );
+      return applied;
     });
   }
 }

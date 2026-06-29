@@ -7,6 +7,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { GameModule } from './modules/game/game.module';
 import { LobbyModule } from './modules/lobby/lobby.module';
 import { RankingModule } from './modules/ranking/ranking.module';
+import { AdminModule } from './modules/admin/admin.module';
 
 @Controller('health')
 class HealthController {
@@ -56,6 +57,7 @@ class HealthController {
     GameModule,
     LobbyModule,
     RankingModule,
+    AdminModule,
   ],
   controllers: [HealthController],
 })
