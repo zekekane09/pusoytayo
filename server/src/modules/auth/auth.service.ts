@@ -126,7 +126,7 @@ export class AuthService {
   }
 
   /**
-   * Self sign-up with username + password. New players get 100 free coins that
+   * Self sign-up with username + password. New players get 10 free coins that
    * are locked (non-withdrawable) until wagered & won.
    */
   async registerWithUsername(
@@ -134,6 +134,7 @@ export class AuthService {
     password: string,
     displayName?: string,
     deviceId?: string,
+    signupIp?: string,
   ) {
     const uname = (username || '').trim().toLowerCase();
     if (uname.length < 3 || (password || '').length < 4) {
@@ -144,18 +145,25 @@ export class AuthService {
     if (await this.usersService.findByUsername(uname)) {
       throw new BadRequestException('Username already taken');
     }
-    // One free bonus per device: if this device already made an account, the
-    // new account starts at 0 coins.
-    const alreadyClaimed = deviceId
+    // One free bonus per device AND per IP: if this device or this IP already
+    // claimed the bonus, the new account starts at 0 coins. The IP guard backs
+    // up the device check for web users who can clear browser storage.
+    const deviceClaimed = deviceId
       ? await this.usersService.deviceHasAccount(deviceId)
       : false;
-    const bonus = alreadyClaimed ? 0 : 100;
+    const ipClaimed = signupIp
+      ? await this.usersService.ipHasBonus(signupIp)
+      : false;
+    const grantBonus = !deviceClaimed && !ipClaimed;
+    const bonus = grantBonus ? 10 : 0;
 
     const user = await this.usersService.createPasswordUser({
       username: uname,
       passwordHash: await bcrypt.hash(password, 10),
       displayName: (displayName || '').trim() || uname,
       deviceId: deviceId ?? null,
+      signupIp: signupIp ?? null,
+      bonusClaimed: grantBonus,
     });
     // Free coins (locked until won) — only for the first account on a device.
     await this.walletService.ensureWallet(user.id, bonus, bonus);
@@ -177,6 +185,9 @@ export class AuthService {
     }
     const ok = await bcrypt.compare(password || '', user.passwordHash);
     if (!ok) throw new UnauthorizedException('Invalid username or password');
+    if (user.status === 'banned') {
+      throw new UnauthorizedException('This account has been banned');
+    }
 
     await this.walletService.ensureWallet(user.id);
     await this.rankingService.ensureRanking(user.id);

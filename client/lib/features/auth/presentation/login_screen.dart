@@ -1,5 +1,5 @@
-import 'dart:io';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart'
+    show kDebugMode, kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -191,6 +191,11 @@ class _LoginButtons extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.read(authControllerProvider.notifier);
 
+    // Social sign-in relies on Firebase, which isn't configured for web — hide
+    // it there so web users use username/guest (and so it never crashes).
+    if (kIsWeb) return const SizedBox.shrink();
+
+    final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
     return GlassContainer(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -201,7 +206,7 @@ class _LoginButtons extends ConsumerWidget {
             color: const Color(0xFFDB4437),
             onTap: isLoading ? null : () => controller.signInWithGoogle(),
           ),
-          if (Platform.isIOS) ...[
+          if (isIOS) ...[
             const SizedBox(height: 12),
             _SocialLoginButton(
               label: 'Continue with Apple',
@@ -375,7 +380,7 @@ class _UsernameLoginState extends ConsumerState<_UsernameLogin> {
             child: Text(
               _signup
                   ? 'Have an account? Log in'
-                  : 'New here? Sign up — 100 free coins',
+                  : 'New here? Sign up — 10 free coins',
               style: const TextStyle(color: AppColors.secondary, fontSize: 13),
             ),
           ),

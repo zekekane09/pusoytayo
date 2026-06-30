@@ -61,9 +61,52 @@ export class RankingService {
     return this.rankRepo.findOne({ where: { userId } });
   }
 
+  /** Recompute the tier name for the current rank points. */
+  private tierFor(points: number): string {
+    return (
+      RANK_TIERS.find((t) => points >= t.minPoints && points <= t.maxPoints) ||
+      RANK_TIERS[0]
+    ).name;
+  }
+
+  /**
+   * Award rank points for placing a bet — the tier climbs the more a player
+   * wagers (1 rank point per coin bet). Also tracks lifetime wagered.
+   */
+  async addWager(userId: string, bet: number): Promise<void> {
+    const amt = Math.floor(Number(bet) || 0);
+    if (amt <= 0) return;
+    const ranking = await this.ensureRanking(userId);
+    ranking.totalWagered = Number(ranking.totalWagered) + amt;
+    ranking.rankPoints += amt;
+    ranking.rankTier = this.tierFor(ranking.rankPoints);
+    await this.rankRepo.save(ranking);
+  }
+
+  /** Record a single-deal win; keeps the player's all-time best. */
+  async recordWin(userId: string, coinsWon: number): Promise<void> {
+    const won = Math.floor(Number(coinsWon) || 0);
+    if (won <= 0) return;
+    const ranking = await this.ensureRanking(userId);
+    if (won > Number(ranking.highestWin)) {
+      ranking.highestWin = won;
+      await this.rankRepo.save(ranking);
+    }
+  }
+
   async getLeaderboard(limit = 100): Promise<PlayerRanking[]> {
     return this.rankRepo.find({
       order: { rankPoints: 'DESC' },
+      take: limit,
+      relations: ['user'],
+    });
+  }
+
+  /** Leaderboard ranked by the biggest single-deal win. */
+  async getTopWins(limit = 100): Promise<PlayerRanking[]> {
+    return this.rankRepo.find({
+      where: {},
+      order: { highestWin: 'DESC' },
       take: limit,
       relations: ['user'],
     });

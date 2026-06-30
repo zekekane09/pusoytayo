@@ -40,5 +40,10 @@ class SocketEvents {
 
   // Chat events
   static const String chatMessage = 'chat:message';
+  static const String chatVoice = 'chat:voice';
   static const String chatEmoji = 'chat:emoji';
+
+  // Friends
+  static const String friendInvite = 'friend:invite';
+  static const String friendInvited = 'friend:invited';
 }

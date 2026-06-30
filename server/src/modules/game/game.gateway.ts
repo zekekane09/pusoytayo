@@ -27,6 +27,9 @@ export class GameGateway
 
   private playerSockets = new Map<string, string>();
   private roomTimers = new Map<string, NodeJS.Timeout>();
+  // Players locked in for the current round (snapshotted when betting starts) so
+  // anyone joining mid-round sits out and is dealt in on the next deal.
+  private roundParticipants = new Map<string, string[]>();
   // Guards against scoring a room twice (e.g. the last submit and the arrange
   // timer firing at the same moment) which would double-settle wallets.
   private revealing = new Set<string>();
@@ -155,6 +158,59 @@ export class GameGateway
     this.broadcastRoomUpdate(data.roomCode);
   }
 
+  // In-game chat: relay a short text message to everyone in the room.
+  @SubscribeMessage('chat:message')
+  handleChatMessage(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { roomCode: string; name?: string; text: string },
+  ) {
+    if (!client.user) return;
+    const text = (data.text || '').toString().slice(0, 300).trim();
+    if (!text) return;
+    this.server.to(data.roomCode).emit('chat:message', {
+      userId: client.user.id,
+      name: (data.name || 'Player').toString().slice(0, 40),
+      text,
+      at: Date.now(),
+    });
+  }
+
+  // Invite a friend to a room: pings their socket (if online) with the code.
+  @SubscribeMessage('friend:invite')
+  handleFriendInvite(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody()
+    data: { friendId: string; roomCode: string; fromName?: string },
+  ) {
+    if (!client.user) return;
+    const sid = this.playerSockets.get(data.friendId);
+    if (!sid) return; // friend offline
+    this.server.to(sid).emit('friend:invited', {
+      fromName: (data.fromName || 'A friend').toString().slice(0, 40),
+      roomCode: (data.roomCode || '').toString().slice(0, 12),
+    });
+  }
+
+  // Voice note: relay a short base64-encoded audio clip to the room. Capped so
+  // a huge payload can't be broadcast (≈ a few seconds of compressed audio).
+  @SubscribeMessage('chat:voice')
+  handleChatVoice(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody()
+    data: { roomCode: string; name?: string; data: string; ms?: number },
+  ) {
+    if (!client.user) return;
+    const audio = (data.data || '').toString();
+    if (!audio || audio.length > 700000) return; // ~512KB decoded
+    this.server.to(data.roomCode).emit('chat:voice', {
+      userId: client.user.id,
+      name: (data.name || 'Player').toString().slice(0, 40),
+      data: audio,
+      ms: Math.min(Number(data.ms) || 0, 60000),
+      at: Date.now(),
+    });
+  }
+
   @SubscribeMessage('game:ready')
   async handleReady(
     @ConnectedSocket() client: AuthenticatedSocket,
@@ -180,6 +236,13 @@ export class GameGateway
           this.server
             .to(data.roomCode)
             .emit('lobby:room_updated', this.roomUpdatePayload(fresh));
+          // If everyone left is already ready, don't make them wait on the
+          // player we just removed — start the next round now.
+          const othersReady =
+            fresh.players.length >= 2 &&
+            fresh.players.every((p) => p.isReady) &&
+            (fresh.status === 'waiting' || fresh.status === 'finished');
+          if (othersReady) await this.startBettingPhase(data.roomCode);
         }
         await this.broadcastRoomUpdate(data.roomCode);
         return;
@@ -198,7 +261,18 @@ export class GameGateway
       const allReady =
         game.players.length >= 2 && game.players.every((p) => p.isReady);
 
-      if (allReady) {
+      // Only start a NEW round between rounds (not while one is in progress —
+      // e.g. a player who joined mid-round readying shouldn't restart it).
+      const betweenRounds =
+        game.status === 'waiting' || game.status === 'finished';
+
+      console.log(
+        `[FLOW] ready ${data.roomCode} by ${client.user.id} status=${game.status} ` +
+          `ready=${game.players.filter((p) => p.isReady).length}/${game.players.length} ` +
+          `allReady=${allReady} betweenRounds=${betweenRounds}`,
+      );
+
+      if (allReady && betweenRounds) {
         await this.startBettingPhase(data.roomCode);
       }
     } catch (e: any) {
@@ -211,9 +285,24 @@ export class GameGateway
    * their bets, then deal once everyone has bet or the timer expires.
    */
   private async startBettingPhase(roomCode: string) {
-    const config = await this.gameService.bettingConfig(roomCode);
-    await this.gameService.enterBetting(roomCode);
+    // Idempotent: ignore if a round is already underway (guards against the
+    // race where several "ready" events fire near-simultaneously).
+    const cur = await this.gameService.getRoomState(roomCode);
+    console.log(
+      `[FLOW] startBettingPhase ${roomCode} status=${cur?.status ?? 'none'}`,
+    );
+    if (!cur || (cur.status !== 'waiting' && cur.status !== 'finished')) return;
 
+    this.clearRoomTimer(roomCode); // never run two timers for one room
+    const config = await this.gameService.bettingConfig(roomCode);
+    const game = await this.gameService.enterBetting(roomCode);
+    // Lock in who plays this round; late joiners are excluded until next deal.
+    this.roundParticipants.set(
+      roomCode,
+      game.players.map((p) => p.userId),
+    );
+
+    console.log(`[FLOW] emit betting_phase ${roomCode}`);
     this.server.to(roomCode).emit('game:betting_phase', {
       min: config.min,
       max: config.max,
@@ -274,6 +363,7 @@ export class GameGateway
   }
 
   private async startGameCountdown(roomCode: string) {
+    console.log(`[FLOW] startGameCountdown(deal) ${roomCode}`);
     this.server.to(roomCode).emit('game:start', {
       countdown: 3,
       message: 'Game starting...',
@@ -281,14 +371,18 @@ export class GameGateway
 
     setTimeout(async () => {
       try {
-        const { game, hands } = await this.gameService.startGame(roomCode);
+        const participants = this.roundParticipants.get(roomCode);
+        const { game, hands } = await this.gameService.startGame(
+          roomCode,
+          participants,
+        );
 
         for (const player of game.players) {
+          const cards = hands.get(player.userId);
+          if (!cards) continue; // sat out this round (late joiner)
           const socketId = this.playerSockets.get(player.userId);
           if (socketId) {
-            this.server.to(socketId).emit('game:deal', {
-              cards: hands.get(player.userId),
-            });
+            this.server.to(socketId).emit('game:deal', { cards });
           }
         }
 
@@ -385,11 +479,31 @@ export class GameGateway
     await this.revealAndScore(roomCode);
   }
 
+  private clearRoomTimer(roomCode: string) {
+    const t = this.roomTimers.get(roomCode);
+    if (t) {
+      clearInterval(t);
+      this.roomTimers.delete(roomCode);
+    }
+  }
+
   private async revealAndScore(roomCode: string) {
     if (this.revealing.has(roomCode)) return;
+    // Don't re-reveal a round that already finished (e.g. a straggling timer
+    // firing after the round ended — that would re-settle wallets and bounce
+    // every client back to the result screen).
+    const state = await this.gameService.getRoomState(roomCode);
+    console.log(
+      `[FLOW] revealAndScore ${roomCode} status=${state?.status ?? 'none'}`,
+    );
+    if (!state || state.status === 'finished' || state.status === 'cancelled') {
+      return;
+    }
+    this.clearRoomTimer(roomCode); // kill any lingering arrange/betting timer
     this.revealing.add(roomCode);
     try {
       const result = await this.gameService.finishGame(roomCode);
+      console.log(`[FLOW] emit finished ${roomCode} winner=${result.winnerId}`);
 
       // Full server-authoritative reveal: every player's arranged hands, the
       // per-row winners (so the client can reveal top -> middle -> bottom), the
@@ -401,8 +515,18 @@ export class GameGateway
         rowWinners: result.rowWinners,
         scores: result.scores,
         winnerId: result.winnerId,
+        rake: result.rake,
         players: result.players,
       });
+      // finishGame cleared everyone's ready flag — push the fresh room state so
+      // clients re-enable the "Next" button (otherwise they keep showing the
+      // stale "Waiting N/N" and can never trigger the next round).
+      const fresh = await this.gameService.getRoomState(roomCode);
+      if (fresh) {
+        this.server
+          .to(roomCode)
+          .emit('lobby:room_updated', this.roomUpdatePayload(fresh));
+      }
       // Note: broke players are NOT kicked here — they stay to review the
       // result, and are removed only when they tap "Next" (see handleReady).
     } catch (e: any) {

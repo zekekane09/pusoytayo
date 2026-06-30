@@ -22,7 +22,13 @@ class SocketClient {
   bool get isConnected => _isConnected;
 
   Future<void> connect() async {
-    if (_isConnected) return;
+    // Never create a second socket: if one already exists (even mid-connect)
+    // reuse it. Creating a new socket would orphan every event handler that was
+    // already registered on the old one (dropping game/chat/invite events).
+    if (_socket != null) {
+      if (!_isConnected) _socket!.connect();
+      return;
+    }
 
     final token = await _apiClient.getAccessToken();
     if (token == null) {

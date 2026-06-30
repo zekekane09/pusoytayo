@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:pusoy_tayo/core/network/api_client.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/core/theme/glass_container.dart';
+import 'package:pusoy_tayo/core/update/update_checker.dart';
 import 'package:pusoy_tayo/features/auth/presentation/auth_controller.dart';
 import 'package:pusoy_tayo/features/home/widgets/balance_card.dart';
 import 'package:pusoy_tayo/features/home/widgets/game_mode_card.dart';
@@ -17,6 +19,11 @@ class HomeScreen extends ConsumerWidget {
     final user = ref.watch(authControllerProvider).valueOrNull;
     final landscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
+
+    // Check for a newer Android build once per session (no-op on web).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      UpdateChecker.maybePrompt(context, ref.read(apiClientProvider));
+    });
 
     final modeCards = [
       GameModeCard(
@@ -369,10 +376,18 @@ class _QuickActions extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _ActionItem(icon: Icons.leaderboard_rounded, label: 'Rankings', onTap: () {}),
-              _ActionItem(icon: Icons.people_rounded, label: 'Friends', onTap: () {}),
-              _ActionItem(icon: Icons.card_giftcard_rounded, label: 'Rewards', onTap: () {}),
-              _ActionItem(icon: Icons.store_rounded, label: 'Shop', onTap: () {}),
+              _ActionItem(
+                  icon: Icons.leaderboard_rounded,
+                  label: 'Rankings',
+                  onTap: () => context.push('/rankings')),
+              _ActionItem(
+                  icon: Icons.people_rounded,
+                  label: 'Friends',
+                  onTap: () => context.push('/friends')),
+              _ActionItem(
+                  icon: Icons.account_balance_wallet_rounded,
+                  label: 'Wallet',
+                  onTap: () => context.go('/wallet')),
             ],
           ),
         ],

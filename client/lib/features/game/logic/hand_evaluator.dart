@@ -10,7 +10,9 @@ class HandEvaluator {
       return const HandResult(type: HandType.highCard, rankValues: []);
     }
 
-    final sorted = List<PlayingCard>.from(cards)..sort();
+    // Sort by poker value (2 lowest) so evaluation matches standard poker.
+    final sorted = List<PlayingCard>.from(cards)
+      ..sort((a, b) => a.pv.compareTo(b.pv));
 
     if (cards.length == 1) return _evaluateSingle(sorted);
     if (cards.length == 2) return _evaluatePair(sorted);
@@ -19,7 +21,7 @@ class HandEvaluator {
 
     return HandResult(
       type: HandType.highCard,
-      rankValues: sorted.map((c) => c.pusoyRank).toList()..sort((a, b) => b.compareTo(a)),
+      rankValues: sorted.map((c) => c.pv).toList()..sort((a, b) => b.compareTo(a)),
       highSuitValue: sorted.last.suitValue,
     );
   }
@@ -28,28 +30,28 @@ class HandEvaluator {
     final card = cards[0];
     return HandResult(
       type: HandType.highCard,
-      rankValues: [card.pusoyRank],
+      rankValues: [card.pv],
       highSuitValue: card.suitValue,
     );
   }
 
   static HandResult _evaluatePair(List<PlayingCard> cards) {
-    if (cards[0].pusoyRank == cards[1].pusoyRank) {
+    if (cards[0].pv == cards[1].pv) {
       return HandResult(
         type: HandType.pair,
-        rankValues: [cards[0].pusoyRank],
+        rankValues: [cards[0].pv],
         highSuitValue: cards.map((c) => c.suitValue).reduce((a, b) => a > b ? a : b),
       );
     }
     return HandResult(
       type: HandType.highCard,
-      rankValues: cards.map((c) => c.pusoyRank).toList()..sort((a, b) => b.compareTo(a)),
+      rankValues: cards.map((c) => c.pv).toList()..sort((a, b) => b.compareTo(a)),
       highSuitValue: cards.last.suitValue,
     );
   }
 
   static HandResult _evaluateThree(List<PlayingCard> cards) {
-    final ranks = cards.map((c) => c.pusoyRank).toList()
+    final ranks = cards.map((c) => c.pv).toList()
       ..sort((a, b) => b.compareTo(a));
     final counts = _rankCounts(cards);
     final maxSuit = cards.map((c) => c.suitValue).reduce((a, b) => a > b ? a : b);
@@ -70,7 +72,7 @@ class HandEvaluator {
         type: HandType.pair,
         rankValues: [pr, kicker],
         highSuitValue: cards
-            .where((c) => c.pusoyRank == pr)
+            .where((c) => c.pv == pr)
             .map((c) => c.suitValue)
             .reduce((a, b) => a > b ? a : b),
       );
@@ -88,12 +90,12 @@ class HandEvaluator {
     final isStraight = _isStraight(sorted);
 
     if (isFlush && isStraight) {
-      final ranks = sorted.map((c) => c.pusoyRank).toList();
+      final ranks = sorted.map((c) => c.pv).toList();
       if (ranks.contains(14) && ranks.contains(13) && ranks.contains(12) &&
           ranks.contains(11) && ranks.contains(10)) {
         return HandResult(
           type: HandType.royalFlush,
-          rankValues: [sorted.last.pusoyRank],
+          rankValues: [sorted.last.pv],
           highSuitValue: sorted.last.suitValue,
         );
       }
@@ -113,7 +115,7 @@ class HandEvaluator {
     if (isFlush) {
       return HandResult(
         type: HandType.flush,
-        rankValues: sorted.map((c) => c.pusoyRank).toList()..sort((a, b) => b.compareTo(a)),
+        rankValues: sorted.map((c) => c.pv).toList()..sort((a, b) => b.compareTo(a)),
         highSuitValue: sorted[0].suitValue,
       );
     }
@@ -137,7 +139,7 @@ class HandEvaluator {
 
     return HandResult(
       type: HandType.highCard,
-      rankValues: sorted.map((c) => c.pusoyRank).toList()..sort((a, b) => b.compareTo(a)),
+      rankValues: sorted.map((c) => c.pv).toList()..sort((a, b) => b.compareTo(a)),
       highSuitValue: sorted.last.suitValue,
     );
   }
@@ -145,13 +147,13 @@ class HandEvaluator {
   static Map<int, int> _rankCounts(List<PlayingCard> cards) {
     final m = <int, int>{};
     for (final c in cards) {
-      m[c.pusoyRank] = (m[c.pusoyRank] ?? 0) + 1;
+      m[c.pv] = (m[c.pv] ?? 0) + 1;
     }
     return m;
   }
 
   static int _maxSuitOfRank(List<PlayingCard> cards, int rank) => cards
-      .where((c) => c.pusoyRank == rank)
+      .where((c) => c.pv == rank)
       .map((c) => c.suitValue)
       .reduce((a, b) => a > b ? a : b);
 
@@ -161,7 +163,7 @@ class HandEvaluator {
     if (trip.isEmpty) return null;
     final tripRank = trip.first;
     final kickers = sorted
-        .map((c) => c.pusoyRank)
+        .map((c) => c.pv)
         .where((r) => r != tripRank)
         .toList()
       ..sort((a, b) => b.compareTo(a));
@@ -180,7 +182,7 @@ class HandEvaluator {
     final high = pairs[0];
     final low = pairs[1];
     final kicker =
-        sorted.map((c) => c.pusoyRank).firstWhere((r) => r != high && r != low);
+        sorted.map((c) => c.pv).firstWhere((r) => r != high && r != low);
     return HandResult(
       type: HandType.twoPair,
       rankValues: [high, low, kicker],
@@ -194,7 +196,7 @@ class HandEvaluator {
     if (pairRanks.isEmpty) return null;
     final pr = pairRanks.first;
     final kickers = sorted
-        .map((c) => c.pusoyRank)
+        .map((c) => c.pv)
         .where((r) => r != pr)
         .toList()
       ..sort((a, b) => b.compareTo(a));
@@ -213,7 +215,7 @@ class HandEvaluator {
   /// a straight), even though 2 is the highest card for pair/high-card
   /// comparisons. The deck stores "2" as pusoyRank 15, so map it back to 2 here.
   static List<int> _straightValues(List<PlayingCard> cards) {
-    return cards.map((c) => c.pusoyRank == 15 ? 2 : c.pusoyRank).toList()
+    return cards.map((c) => c.pv == 15 ? 2 : c.pv).toList()
       ..sort();
   }
 
@@ -248,7 +250,7 @@ class HandEvaluator {
   static HandResult? _findFourOfAKind(List<PlayingCard> sorted) {
     final rankCounts = <int, int>{};
     for (final card in sorted) {
-      rankCounts[card.pusoyRank] = (rankCounts[card.pusoyRank] ?? 0) + 1;
+      rankCounts[card.pv] = (rankCounts[card.pv] ?? 0) + 1;
     }
 
     for (final entry in rankCounts.entries) {
@@ -258,7 +260,7 @@ class HandEvaluator {
           type: HandType.fourOfAKind,
           rankValues: [entry.key, kicker],
           highSuitValue: sorted
-              .where((c) => c.pusoyRank == entry.key)
+              .where((c) => c.pv == entry.key)
               .map((c) => c.suitValue)
               .reduce((a, b) => a > b ? a : b),
         );
@@ -270,7 +272,7 @@ class HandEvaluator {
   static HandResult? _findFullHouse(List<PlayingCard> sorted) {
     final rankCounts = <int, int>{};
     for (final card in sorted) {
-      rankCounts[card.pusoyRank] = (rankCounts[card.pusoyRank] ?? 0) + 1;
+      rankCounts[card.pv] = (rankCounts[card.pv] ?? 0) + 1;
     }
 
     int? threeRank;
@@ -286,7 +288,7 @@ class HandEvaluator {
         type: HandType.fullHouse,
         rankValues: [threeRank, twoRank],
         highSuitValue: sorted
-            .where((c) => c.pusoyRank == threeRank)
+            .where((c) => c.pv == threeRank)
             .map((c) => c.suitValue)
             .reduce((a, b) => a > b ? a : b),
       );
@@ -322,4 +324,10 @@ class HandEvaluator {
     return middleResult.compareTo(frontResult) >= 0 &&
         backResult.compareTo(middleResult) >= 0;
   }
+}
+
+/// Poker value where 2 is the LOWEST card (the deck stores "2" as pusoyRank 15).
+/// Used for all hand evaluation/comparison so ranking matches standard poker.
+extension _PokerValue on PlayingCard {
+  int get pv => pusoyRank == 15 ? 2 : pusoyRank;
 }

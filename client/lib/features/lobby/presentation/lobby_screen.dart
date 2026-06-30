@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pusoy_tayo/core/constants/socket_events.dart';
+import 'package:pusoy_tayo/core/network/api_client.dart';
 import 'package:pusoy_tayo/core/network/socket_client.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/core/theme/glass_container.dart';
@@ -24,17 +25,33 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen>
   List<RoomModel> _onlineRooms = [];
   bool _connecting = false;
   Timer? _refreshTimer;
+  Map<String, bool> _modes = {'classic': true, 'banker': true, 'pot': true};
 
   @override
   void initState() {
     super.initState();
     // Default to the online (Competitive) tab so rooms others created show up.
     _tabController = TabController(length: 3, vsync: this, initialIndex: 1);
+    _loadModes();
     _connectAndList();
   }
 
   void _refreshRooms() {
     ref.read(socketClientProvider).emit(SocketEvents.lobbyList);
+  }
+
+  Future<void> _loadModes() async {
+    try {
+      final res = await ref.read(apiClientProvider).get('/admin/modes');
+      final m = res.data as Map;
+      if (mounted) {
+        setState(() => _modes = {
+              'classic': m['classic'] != false,
+              'banker': m['banker'] != false,
+              'pot': m['pot'] != false,
+            });
+      }
+    } catch (_) {}
   }
 
   Future<void> _connectAndList() async {
@@ -76,6 +93,8 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen>
         );
       }
     }));
+    // Friend game-invites are handled app-wide in ShellScaffold, so they reach
+    // the player on any screen (not just the lobby).
     socket.emit(SocketEvents.lobbyList);
 
     // Poll periodically so newly created rooms on other devices appear even if
@@ -101,7 +120,23 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen>
   }
 
   void _showCreateRoomDialog() {
-    String mode = 'classic'; // classic = Free-for-All
+    // Only offer enabled modes (admin can disable them).
+    final modeOptions = [
+      if (_modes['classic'] != false)
+        ('classic', '🎮 Free-for-All', 'Everyone competes against everyone.'),
+      if (_modes['banker'] != false)
+        ('banker', '👑 Banker',
+            'You are the Banker; everyone plays only against you.'),
+      if (_modes['pot'] != false)
+        ('pot', '🪙 Central Pot', 'Everyone antes; winner takes the pot.'),
+    ];
+    if (modeOptions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No game modes are enabled right now.')),
+      );
+      return;
+    }
+    String mode = modeOptions.first.$1;
     int bet = 0;
     int players = 4;
     final coins = ref.read(walletProvider).valueOrNull?.coins ?? 0;
@@ -138,12 +173,7 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen>
                 const SizedBox(height: 8),
                 Column(
                   children: [
-                    for (final m in const [
-                      ('classic', '🎮 Free-for-All',
-                          'Everyone competes against everyone.'),
-                      ('banker', '👑 Banker',
-                          'You are the Banker; everyone plays only against you.'),
-                    ])
+                    for (final m in modeOptions)
                       InkWell(
                         borderRadius: BorderRadius.circular(10),
                         onTap: () => setSheet(() => mode = m.$1),
@@ -480,17 +510,42 @@ class _RoomsList extends StatelessWidget {
   }
 }
 
-class _RoomCard extends StatelessWidget {
+class _RoomCard extends ConsumerWidget {
   final RoomModel room;
   final bool online;
   const _RoomCard({required this.room, required this.online});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     // The whole row is tappable to enter the room.
-    final onTap = room.isFull
-        ? null
-        : () => context.go('${online ? '/online' : '/game'}/${room.code}');
+    final coins = ref.watch(walletProvider).valueOrNull?.coins ?? 0;
+    void join() {
+      // Block joining a staked room with no coins.
+      if (online && room.betAmount > 0 && coins <= 0) {
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.surface,
+            title: const Text("Can't join",
+                style: TextStyle(color: AppColors.textPrimary)),
+            content: const Text(
+              'You have 0 coins. Add coins before joining a paid room.',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+      context.go('${online ? '/online' : '/game'}/${room.code}');
+    }
+
+    final onTap = room.isFull ? null : join;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Material(

@@ -1,7 +1,7 @@
 name: pusoy_tayo
 description: "Pusoy Tayo - Online Multiplayer 13-Card Pusoy"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.2.3+11
 
 environment:
   sdk: ^3.12.2
@@ -52,6 +52,16 @@ dependencies:
   logger: ^2.5.0
   equatable: ^2.0.7
   collection: ^1.19.1
+
+  # Voice messages (record a short clip, relay over socket, play back)
+  record: ^7.1.1
+  audioplayers: ^6.1.0
+  path_provider: ^2.1.4
+  permission_handler: ^11.3.1
+
+  # Update checking (compare build, open APK download)
+  package_info_plus: ^8.1.1
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

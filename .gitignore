@@ -25,3 +25,6 @@ Thumbs.db
 **/GoogleService-Info.plist
 **/firebase_options.dart
 **/firebase-service-account.json
+
+# APK is served from a Railway volume, never committed (keeps deploys light)
+server/public/downloads/

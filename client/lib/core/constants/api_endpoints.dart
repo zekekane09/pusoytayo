@@ -25,7 +25,9 @@ class ApiEndpoints {
   // Wallet
   static const String wallet = '/wallet';
   static const String walletDeposit = '/wallet/deposit';
+  static const String walletDeposits = '/wallet/deposits';
   static const String walletWithdraw = '/wallet/withdraw';
+  static const String walletWithdrawals = '/wallet/withdrawals';
   static const String walletTransactions = '/wallet/transactions';
 
   // Rooms
@@ -35,11 +37,20 @@ class ApiEndpoints {
   // Rankings
   static const String rankings = '/rankings';
   static const String leaderboard = '/rankings/leaderboard';
+  static const String topWins = '/rankings/top-wins';
   static String playerRank(String id) => '/rankings/$id';
+
+  // Friends
+  static const String friends = '/friends';
+  static const String friendsSearch = '/friends/search';
+  static const String friendRequest = '/friends/request';
+  static const String friendAccept = '/friends/accept';
+  static const String friendRemove = '/friends/remove';
 
   // Matchmaking
   static const String quickMatch = '/matchmaking/quick';
 
-  // Health
+  // Health / app meta
   static const String health = '/health';
+  static const String appVersion = '/app/version';
 }

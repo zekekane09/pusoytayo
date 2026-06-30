@@ -7,6 +7,8 @@ import 'package:pusoy_tayo/features/auth/presentation/login_screen.dart';
 import 'package:pusoy_tayo/features/game/presentation/game_screen.dart';
 import 'package:pusoy_tayo/features/game/presentation/online_game_screen.dart';
 import 'package:pusoy_tayo/features/home/presentation/home_screen.dart';
+import 'package:pusoy_tayo/features/friends/friends_screen.dart';
+import 'package:pusoy_tayo/features/rankings/rankings_screen.dart';
 import 'package:pusoy_tayo/features/lobby/presentation/lobby_screen.dart';
 import 'package:pusoy_tayo/features/profile/presentation/profile_screen.dart';
 import 'package:pusoy_tayo/features/wallet/presentation/wallet_screen.dart';
@@ -93,6 +95,14 @@ final routerProvider = Provider<GoRouter>((ref) {
           final roomCode = state.pathParameters['roomCode']!;
           return OnlineGameScreen(roomCode: roomCode);
         },
+      ),
+      GoRoute(
+        path: '/friends',
+        builder: (context, state) => const FriendsScreen(),
+      ),
+      GoRoute(
+        path: '/rankings',
+        builder: (context, state) => const RankingsScreen(),
       ),
     ],
   );

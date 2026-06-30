@@ -3,6 +3,8 @@ class WalletModel {
   final String userId;
   final int coins;
   final int cash;
+  final int bonusLocked;
+  final int withdrawable;
   final DateTime updatedAt;
 
   const WalletModel({
@@ -10,6 +12,8 @@ class WalletModel {
     required this.userId,
     required this.coins,
     required this.cash,
+    this.bonusLocked = 0,
+    this.withdrawable = 0,
     required this.updatedAt,
   });
 
@@ -28,6 +32,8 @@ class WalletModel {
       userId: json['userId']?.toString() ?? '',
       coins: toInt(json['coins']),
       cash: toInt(json['cash']),
+      bonusLocked: toInt(json['bonusLocked']),
+      withdrawable: toInt(json['withdrawable']),
       updatedAt: json['updatedAt'] != null
           ? DateTime.tryParse(json['updatedAt'].toString()) ?? DateTime.now()
           : DateTime.now(),

@@ -76,7 +76,13 @@ export class GameLogicService {
   }
 
   evaluate(cards: Card[]): HandResult {
-    const sorted = [...cards].sort((a, b) => {
+    // Standard poker ranking: 2 is the LOWEST card. The deck stores "2" as
+    // rank 15, so normalize it to 2 before evaluating/comparing anything.
+    const norm = cards.map((c) => ({
+      rank: c.rank === 15 ? 2 : c.rank,
+      suit: c.suit,
+    }));
+    const sorted = [...norm].sort((a, b) => {
       if (a.rank !== b.rank) return a.rank - b.rank;
       return SUIT_ORDER[a.suit] - SUIT_ORDER[b.suit];
     });
@@ -407,6 +413,21 @@ export class GameLogicService {
    * The banker's score is the mirror of the sum of everyone else's results.
    * A 3-row sweep ("scoop") is worth 6, otherwise +1 per row won, -1 per lost.
    */
+  /**
+   * A "LOCKED" hand is a special auto-win: the arrangement contains BOTH a
+   * straight flush (or royal flush) AND a four-of-a-kind across its two 5-card
+   * rows (middle + back). A locked player beats any non-locked opponent
+   * outright; if both sides are locked it's a tie.
+   */
+  isLocked(_front: Card[], middle: Card[], back: Card[]): boolean {
+    const types = [this.evaluate(middle).type, this.evaluate(back).type];
+    const hasStraightFlush = types.some(
+      (t) => t === HandType.STRAIGHT_FLUSH || t === HandType.ROYAL_FLUSH,
+    );
+    const hasFourKind = types.some((t) => t === HandType.FOUR_OF_A_KIND);
+    return hasStraightFlush && hasFourKind;
+  }
+
   calculateBankerScores(
     arrangements: {
       playerId: string;
@@ -422,26 +443,40 @@ export class GameLogicService {
     const banker = arrangements.find((a) => a.playerId === bankerId);
     if (!banker) return scores;
 
+    const bankerLocked = this.isLocked(banker.front, banker.middle, banker.back);
+
     for (const p of arrangements) {
       if (p.playerId === bankerId) continue;
 
-      let pWins = 0;
-      let bWins = 0;
-      const rows: [Card[], Card[]][] = [
-        [p.front, banker.front],
-        [p.middle, banker.middle],
-        [p.back, banker.back],
-      ];
-      for (const [hp, hb] of rows) {
-        const cmp = this.compareHands(this.evaluate(hp), this.evaluate(hb));
-        if (cmp > 0) pWins++;
-        else if (cmp < 0) bWins++;
-      }
+      const playerLocked = this.isLocked(p.front, p.middle, p.back);
 
       let delta: number;
-      if (pWins === 3) delta = 6;
-      else if (bWins === 3) delta = -6;
-      else delta = pWins - bWins;
+      // LOCKED overrides the normal row-by-row comparison.
+      if (playerLocked || bankerLocked) {
+        if (playerLocked && bankerLocked) {
+          delta = 0; // both locked → tie
+        } else if (playerLocked) {
+          delta = 6; // player's locked hand auto-wins
+        } else {
+          delta = -6; // banker's locked hand auto-wins
+        }
+      } else {
+        let pWins = 0;
+        let bWins = 0;
+        const rows: [Card[], Card[]][] = [
+          [p.front, banker.front],
+          [p.middle, banker.middle],
+          [p.back, banker.back],
+        ];
+        for (const [hp, hb] of rows) {
+          const cmp = this.compareHands(this.evaluate(hp), this.evaluate(hb));
+          if (cmp > 0) pWins++;
+          else if (cmp < 0) bWins++;
+        }
+        if (pWins === 3) delta = 6;
+        else if (bWins === 3) delta = -6;
+        else delta = pWins - bWins;
+      }
 
       scores[p.playerId] += delta;
       scores[bankerId] -= delta;

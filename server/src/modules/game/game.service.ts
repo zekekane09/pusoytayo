@@ -1,18 +1,27 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
+import { Repository, IsNull, Not, In } from 'typeorm';
 import { Game, GamePlayer } from './entities/game.entity';
+import { GameHistory } from './entities/game-history.entity';
+import { AppSetting } from '../admin/app-setting.entity';
 import { GameLogicService, Card } from './game-logic.service';
 import { WalletService } from '../wallet/wallet.service';
 import { RankingService } from '../ranking/ranking.service';
 
 @Injectable()
 export class GameService {
+  /** Flat house fee taken from the round winner's winnings (per deal). */
+  private static readonly RAKE = 5;
+
   constructor(
     @InjectRepository(Game)
     private readonly gameRepo: Repository<Game>,
     @InjectRepository(GamePlayer)
     private readonly gpRepo: Repository<GamePlayer>,
+    @InjectRepository(GameHistory)
+    private readonly historyRepo: Repository<GameHistory>,
+    @InjectRepository(AppSetting)
+    private readonly settingRepo: Repository<AppSetting>,
     private readonly gameLogic: GameLogicService,
     private readonly walletService: WalletService,
     private readonly rankingService: RankingService,
@@ -37,6 +46,12 @@ export class GameService {
     const betAmount = options.betAmount || 0;
     const maxPlayers = options.maxPlayers || 4;
     const currency = (options.currency || 'coins') as 'coins' | 'cash';
+
+    // Mode must be enabled by the admin.
+    const modes = await this.enabledModes();
+    if (modes[gameMode] === false) {
+      throw new BadRequestException('This game mode is currently disabled');
+    }
 
     // Banker must be able to cover the worst case — every opponent beating them.
     // Each player risks only their bet, so liability = (maxPlayers-1) x bet.
@@ -91,8 +106,11 @@ export class GameService {
     });
 
     if (!game) throw new BadRequestException('Room not found');
-    if (game.status !== 'waiting')
-      throw new BadRequestException('Game already started');
+    if (game.status === 'finished' || game.status === 'cancelled') {
+      throw new BadRequestException('Game already ended');
+    }
+    // Joining mid-game is allowed — the new player simply sits out the current
+    // round and is dealt in on the next deal.
 
     const existing = game.players.find((p) => p.userId === userId);
     if (existing) return { game, seat: existing.seat };
@@ -297,7 +315,10 @@ export class GameService {
     }
   }
 
-  async startGame(roomCode: string): Promise<{
+  async startGame(
+    roomCode: string,
+    participantIds?: string[],
+  ): Promise<{
     game: Game;
     hands: Map<string, Card[]>;
   }> {
@@ -307,17 +328,37 @@ export class GameService {
     });
 
     if (!game) throw new BadRequestException('Room not found');
-    if (game.players.length < 2)
+
+    // Only the players who were in the room when the round committed take part.
+    // Anyone who joined during the betting/countdown window sits out this deal
+    // and is dealt in on the next one.
+    const set = participantIds ? new Set(participantIds) : null;
+    const participants = set
+      ? game.players.filter((p) => set.has(p.userId))
+      : game.players;
+    // Players sitting this round out (late joiners): clear any stale cards so
+    // they're excluded from scoring/reveal.
+    for (const p of game.players) {
+      if (set && !set.has(p.userId)) {
+        p.cardsJson = null;
+        p.frontHand = null;
+        p.middleHand = null;
+        p.backHand = null;
+        await this.gpRepo.save(p);
+      }
+    }
+
+    if (participants.length < 2)
       throw new BadRequestException('Need at least 2 players');
 
-    const allReady = game.players.every((p) => p.isReady);
+    const allReady = participants.every((p) => p.isReady);
     if (!allReady) throw new BadRequestException('Not all players ready');
 
     // Each player stakes the bet they locked in during the betting phase.
     // Banker mode is the exception: nothing is anted up front — chips are
     // settled head-to-head against the banker at the end of the round.
     if (game.gameMode !== 'banker') {
-      for (const player of game.players) {
+      for (const player of participants) {
         const stake = Number(player.bet) || 0;
         if (stake > 0) {
           await this.walletService.deductBet(
@@ -330,12 +371,16 @@ export class GameService {
       }
     }
 
-    const dealtHands = this.gameLogic.dealCards(game.players.length);
+    const dealtHands = this.gameLogic.dealCards(participants.length);
     const hands = new Map<string, Card[]>();
 
-    for (let i = 0; i < game.players.length; i++) {
-      const player = game.players[i];
+    for (let i = 0; i < participants.length; i++) {
+      const player = participants[i];
       player.cardsJson = dealtHands[i];
+      // Clear last round's arrangement so the "who has arranged" check is fresh.
+      player.frontHand = null;
+      player.middleHand = null;
+      player.backHand = null;
       hands.set(player.userId, dealtHands[i]);
       await this.gpRepo.save(player);
     }
@@ -386,8 +431,14 @@ export class GameService {
 
     // Re-read committed state: two players submitting at once would each see a
     // stale snapshot of the other, so count freshly who still hasn't arranged.
+    // Only players who were dealt this round (cardsJson set) are awaited; late
+    // joiners sitting out have null hands and must not block the round.
     const pending = await this.gpRepo.count({
-      where: { gameId: game.id, frontHand: IsNull() },
+      where: {
+        gameId: game.id,
+        frontHand: IsNull(),
+        cardsJson: Not(IsNull()),
+      },
     });
     return pending === 0;
   }
@@ -441,6 +492,7 @@ export class GameService {
     scores: Record<string, number>;
     winnerId: string;
     pot: number;
+    rake: number;
     rowWinners: { front: string | null; middle: string | null; back: string | null };
     players: {
       userId: string;
@@ -454,6 +506,7 @@ export class GameService {
       frontType: number;
       middleType: number;
       backType: number;
+      locked: boolean;
       displayName: string;
     }[];
   }> {
@@ -464,9 +517,15 @@ export class GameService {
 
     if (!game) throw new BadRequestException('Room not found');
 
+    // Only players who were dealt this round are scored; anyone who joined
+    // mid-round (no cards) sits out and plays from the next deal.
+    const dealt = game.players.filter(
+      (p) => Array.isArray(p.cardsJson) && (p.cardsJson as Card[]).length === 13,
+    );
+
     // Anyone who didn't submit before the timer gets an auto-arranged hand, so
     // the reveal always works once everyone is ready OR the timer ends.
-    for (const p of game.players) {
+    for (const p of dealt) {
       if (!p.frontHand || !p.middleHand || !p.backHand) {
         const a = this.gameLogic.autoArrange((p.cardsJson as Card[]) || []);
         p.frontHand = a.front;
@@ -476,18 +535,18 @@ export class GameService {
       }
     }
 
-    const arrangements = game.players.map((p) => ({
+    const arrangements = dealt.map((p) => ({
       playerId: p.userId,
       front: p.frontHand as Card[],
       middle: p.middleHand as Card[],
       back: p.backHand as Card[],
     }));
 
-    // The banker is the lowest-seated player (the room creator) in banker mode.
+    // The banker is the lowest-seated dealt player in banker mode.
     const mode = game.gameMode;
     const bankerId =
       mode === 'banker'
-        ? [...game.players].sort((a, b) => a.seat - b.seat)[0]?.userId ?? null
+        ? [...dealt].sort((a, b) => a.seat - b.seat)[0]?.userId ?? null
         : null;
 
     // Authoritative scoring per mode.
@@ -523,9 +582,18 @@ export class GameService {
       }
     }
 
-    for (const player of game.players) {
+    for (const player of dealt) {
       player.score = scores[player.userId] || 0;
       await this.gpRepo.save(player);
+    }
+
+    // Clear everyone's ready flag so the NEXT round can't start until every
+    // player taps "Next" to re-confirm — no stale readiness from this round.
+    for (const player of game.players) {
+      if (player.isReady) {
+        player.isReady = false;
+        await this.gpRepo.save(player);
+      }
     }
 
     game.status = 'finished';
@@ -534,7 +602,7 @@ export class GameService {
     await this.gameRepo.save(game);
 
     // Wallet settlement (only when real stakes are in play).
-    const anyStake = game.players.some((p) => Number(p.bet) > 0);
+    const anyStake = dealt.some((p) => Number(p.bet) > 0);
     if (anyStake) {
       const currency = game.currency as 'coins' | 'cash';
       if (mode === 'banker' && bankerId) {
@@ -543,7 +611,7 @@ export class GameService {
         // applied (debits are clamped to balance, so use the applied amounts to
         // keep the books balanced).
         let bankerDelta = 0;
-        for (const p of game.players) {
+        for (const p of dealt) {
           if (p.userId === bankerId) continue;
           // The player risks only their bet: win it or lose it based on who
           // wins more rows (no point multiplier).
@@ -567,7 +635,7 @@ export class GameService {
       } else if (mode === 'pot') {
         // Each player already had their own bet deducted at deal; credit back
         // their net share (net + own ante is always >= 0 in pot mode).
-        for (const player of game.players) {
+        for (const player of dealt) {
           const credit = (scores[player.userId] || 0) + (Number(player.bet) || 0);
           if (credit > 0) {
             await this.walletService.creditWinnings(
@@ -580,7 +648,7 @@ export class GameService {
         }
       } else if (mode !== 'banker') {
         // Classic: winner takes the whole pot (sum of every player's stake).
-        const pot = game.players.reduce(
+        const pot = dealt.reduce(
           (sum, p) => sum + (Number(p.bet) || 0),
           0,
         );
@@ -593,7 +661,7 @@ export class GameService {
       }
     }
 
-    for (const player of game.players) {
+    for (const player of dealt) {
       const won = player.userId === winnerId;
       await this.rankingService.updateRanking(player.userId, won);
     }
@@ -601,11 +669,11 @@ export class GameService {
     // Actual money (coins) won/lost per player, matching the wallet settlement,
     // so the reveal shows real winnings rather than raw points.
     const coinByUser: Record<string, number> = {};
-    for (const p of game.players) coinByUser[p.userId] = 0;
+    for (const p of dealt) coinByUser[p.userId] = 0;
     if (anyStake) {
       if (mode === 'banker' && bankerId) {
         let bankerDelta = 0;
-        for (const p of game.players) {
+        for (const p of dealt) {
           if (p.userId === bankerId) continue;
           const pts = scores[p.userId] || 0;
           const bet = Number(p.bet) || 0;
@@ -615,20 +683,45 @@ export class GameService {
         }
         coinByUser[bankerId] = bankerDelta;
       } else if (mode === 'pot') {
-        for (const p of game.players) coinByUser[p.userId] = scores[p.userId] || 0;
+        for (const p of dealt) coinByUser[p.userId] = scores[p.userId] || 0;
       } else {
-        const totalPot = game.players.reduce(
+        const totalPot = dealt.reduce(
           (s, p) => s + (Number(p.bet) || 0),
           0,
         );
-        for (const p of game.players) {
+        for (const p of dealt) {
           coinByUser[p.userId] =
             (p.userId === winnerId ? totalPot : 0) - (Number(p.bet) || 0);
         }
       }
     }
 
-    const players = game.players.map((p) => ({
+    // House rake: take a flat 5-coin fee from the winner's winnings each deal.
+    let rake = 0;
+    if (anyStake && winnerId && (coinByUser[winnerId] || 0) > 0) {
+      const currency = game.currency as 'coins' | 'cash';
+      const fee = Math.min(GameService.RAKE, coinByUser[winnerId]);
+      const applied = await this.walletService.settle(
+        winnerId,
+        -fee,
+        currency,
+        game.id,
+      );
+      rake = -applied; // applied is negative; rake is the positive fee taken
+      coinByUser[winnerId] += applied; // shown winnings are net of the rake
+      if (rake > 0) await this.addHouseRevenue(rake);
+    }
+
+    // Ranking economy: every player gains rank points for what they wagered
+    // (tier climbs with betting), and we record each player's biggest win.
+    for (const p of dealt) {
+      const bet = Number(p.bet) || 0;
+      if (bet > 0) await this.rankingService.addWager(p.userId, bet);
+      const net = coinByUser[p.userId] || 0;
+      if (net > 0) await this.rankingService.recordWin(p.userId, net);
+    }
+
+    const players = dealt.map((p) => ({
       userId: p.userId,
       seat: p.seat,
       score: scores[p.userId] || 0,
@@ -640,10 +733,99 @@ export class GameService {
       frontType: this.gameLogic.evaluate(p.frontHand as Card[]).type,
       middleType: this.gameLogic.evaluate(p.middleHand as Card[]).type,
       backType: this.gameLogic.evaluate(p.backHand as Card[]).type,
+      locked: this.gameLogic.isLocked(
+        p.frontHand as Card[],
+        p.middleHand as Card[],
+        p.backHand as Card[],
+      ),
       displayName: p.user?.displayName ?? `Seat ${p.seat + 1}`,
     }));
 
-    return { mode, bankerId, scores, winnerId, pot, rowWinners, players };
+    // Save this round to history for the admin panel.
+    await this.historyRepo
+      .save(
+        this.historyRepo.create({
+          roomCode: game.roomCode,
+          gameMode: mode,
+          winnerName:
+            players.find((p) => p.userId === winnerId)?.displayName ?? null,
+          data: {
+            pot,
+            rake,
+            wagered: dealt.reduce((s, p) => s + (Number(p.bet) || 0), 0),
+            players: players.map((p) => ({
+              name: p.displayName,
+              score: p.score,
+              coins: p.coins,
+              locked: p.locked,
+              front: p.front,
+              middle: p.middle,
+              back: p.back,
+            })),
+          },
+        }),
+      )
+      .catch(() => undefined);
+
+    return { mode, bankerId, scores, winnerId, pot, rake, rowWinners, players };
+  }
+
+  /** Which game modes are currently enabled (default all on). */
+  async enabledModes(): Promise<Record<string, boolean>> {
+    const rows = await this.settingRepo.find();
+    const map: Record<string, string> = {};
+    for (const r of rows) map[r.key] = r.value;
+    return {
+      classic: map['mode_classic'] !== 'false',
+      banker: map['mode_banker'] !== 'false',
+      pot: map['mode_pot'] !== 'false',
+    };
+  }
+
+  async setModeEnabled(mode: string, enabled: boolean): Promise<void> {
+    await this.settingRepo.save({ key: `mode_${mode}`, value: String(enabled) });
+  }
+
+  /** Total house earnings (accumulated rake), in coins. */
+  async getHouseRevenue(): Promise<number> {
+    const row = await this.settingRepo.findOne({ where: { key: 'house_rake' } });
+    return Number(row?.value || 0);
+  }
+
+  /** Add to the accumulated house rake total. */
+  private async addHouseRevenue(amount: number): Promise<void> {
+    const current = await this.getHouseRevenue();
+    await this.settingRepo.save({
+      key: 'house_rake',
+      value: String(current + amount),
+    });
+  }
+
+  /** Aggregate stats for the admin dashboard. */
+  async historyStats(): Promise<{
+    total: number;
+    byMode: Record<string, number>;
+    wagered: number;
+    rake: number;
+  }> {
+    const all = await this.historyRepo.find();
+    const byMode: Record<string, number> = {};
+    let wagered = 0;
+    for (const h of all) {
+      byMode[h.gameMode] = (byMode[h.gameMode] || 0) + 1;
+      wagered += Number(h.data?.wagered || 0);
+    }
+    const rake = await this.getHouseRevenue();
+    return { total: all.length, byMode, wagered, rake };
+  }
+
+  /** Recent finished rounds for the admin history view. */
+  async getHistory(roomCode?: string): Promise<GameHistory[]> {
+    return this.historyRepo.find({
+      where: roomCode ? { roomCode } : {},
+      order: { createdAt: 'DESC' },
+      take: 200,
+    });
   }
 
   async getRoomState(roomCode: string): Promise<Game | null> {
@@ -654,8 +836,11 @@ export class GameService {
   }
 
   async getActiveRooms(): Promise<Game[]> {
+    // Include in-progress rooms so players can join for the next deal.
     return this.gameRepo.find({
-      where: { status: 'waiting' },
+      where: {
+        status: In(['waiting', 'betting', 'dealing', 'arranging', 'comparing']),
+      },
       relations: ['players', 'players.user'],
       order: { createdAt: 'DESC' },
       take: 50,

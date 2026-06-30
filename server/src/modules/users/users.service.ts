@@ -27,6 +27,8 @@ export class UsersService {
     passwordHash: string;
     displayName: string;
     deviceId?: string | null;
+    signupIp?: string | null;
+    bonusClaimed?: boolean;
   }): Promise<User> {
     const user = this.userRepo.create({
       firebaseUid: `pwd_${data.username}_${Date.now()}`,
@@ -36,6 +38,8 @@ export class UsersService {
       authProvider: 'password',
       isGuest: false,
       deviceId: data.deviceId ?? null,
+      signupIp: data.signupIp ?? null,
+      bonusClaimed: data.bonusClaimed ?? false,
     });
     return this.userRepo.save(user);
   }
@@ -44,6 +48,15 @@ export class UsersService {
   async deviceHasAccount(deviceId: string): Promise<boolean> {
     if (!deviceId) return false;
     const n = await this.userRepo.count({ where: { deviceId } });
+    return n > 0;
+  }
+
+  /** Has an account from this IP already claimed the free bonus? */
+  async ipHasBonus(ip: string): Promise<boolean> {
+    if (!ip) return false;
+    const n = await this.userRepo.count({
+      where: { signupIp: ip, bonusClaimed: true },
+    });
     return n > 0;
   }
 

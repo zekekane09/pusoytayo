@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, UseGuards, Req } from '@nestjs/common';
+import { Controller, Post, Body, Get, Ip, UseGuards, Req } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -25,6 +25,7 @@ export class AuthController {
 
   @Post('register-username')
   async registerUsername(
+    @Ip() ip: string,
     @Body()
     body: {
       username: string;
@@ -38,6 +39,7 @@ export class AuthController {
       body.password,
       body.displayName,
       body.deviceId,
+      ip,
     );
   }
 

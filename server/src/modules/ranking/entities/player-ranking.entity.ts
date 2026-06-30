@@ -28,6 +28,14 @@ export class PlayerRanking {
   @Column({ default: 0 })
   losses: number;
 
+  // Largest single-deal coin win — drives the "highest win" leaderboard.
+  @Column({ name: 'highest_win', type: 'bigint', default: 0 })
+  highestWin: number;
+
+  // Total coins ever wagered — tier climbs as this grows.
+  @Column({ name: 'total_wagered', type: 'bigint', default: 0 })
+  totalWagered: number;
+
   @Column({ name: 'games_played', default: 0 })
   gamesPlayed: number;
 

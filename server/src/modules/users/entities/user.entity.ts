@@ -44,6 +44,15 @@ export class User {
   @Column({ name: 'device_id', type: 'varchar', nullable: true, length: 64 })
   deviceId: string | null;
 
+  // IP the account registered from — a second guard against farming the free
+  // bonus by clearing device storage (esp. on web).
+  @Column({ name: 'signup_ip', type: 'varchar', nullable: true, length: 64 })
+  signupIp: string | null;
+
+  // Whether this account received the one-time free sign-up bonus.
+  @Column({ name: 'bonus_claimed', default: false })
+  bonusClaimed: boolean;
+
   @Column({ name: 'phone_number', type: 'varchar', nullable: true, length: 20 })
   phoneNumber: string | null;
 

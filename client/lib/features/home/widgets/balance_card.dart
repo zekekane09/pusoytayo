@@ -1,14 +1,38 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pusoy_tayo/core/theme/app_colors.dart';
 import 'package:pusoy_tayo/core/theme/glass_container.dart';
 import 'package:pusoy_tayo/features/wallet/data/wallet_provider.dart';
 
-class BalanceCard extends ConsumerWidget {
+class BalanceCard extends ConsumerStatefulWidget {
   const BalanceCard({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BalanceCard> createState() => _BalanceCardState();
+}
+
+class _BalanceCardState extends ConsumerState<BalanceCard> {
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    // Keep the balance fresh so admin top-ups show up without reopening.
+    _poll = Timer.periodic(const Duration(seconds: 12), (_) {
+      if (mounted) ref.invalidate(walletProvider);
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final wallet = ref.watch(walletProvider);
     final coins = wallet.valueOrNull?.formattedCoins ?? '—';
     final cash = wallet.valueOrNull?.formattedCash ?? '₱0.00';
@@ -46,6 +70,19 @@ class BalanceCard extends ConsumerWidget {
                   color: AppColors.cashColor,
                 ),
               ),
+              IconButton(
+                tooltip: 'Refresh balance',
+                icon: wallet.isLoading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: AppColors.coinColor),
+                      )
+                    : const Icon(Icons.refresh_rounded,
+                        color: AppColors.coinColor, size: 20),
+                onPressed: () => ref.invalidate(walletProvider),
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -53,7 +90,7 @@ class BalanceCard extends ConsumerWidget {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () {},
+                  onPressed: () => context.go('/wallet'),
                   icon: const Icon(Icons.add, size: 16),
                   label: const Text('Deposit'),
                   style: OutlinedButton.styleFrom(
@@ -65,7 +102,7 @@ class BalanceCard extends ConsumerWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () {},
+                  onPressed: () => context.go('/wallet'),
                   icon: const Icon(Icons.arrow_upward, size: 16),
                   label: const Text('Withdraw'),
                   style: OutlinedButton.styleFrom(

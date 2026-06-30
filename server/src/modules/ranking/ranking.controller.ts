@@ -19,4 +19,19 @@ export class RankingController {
   async getLeaderboard(@Query('limit') limit?: number) {
     return this.rankingService.getLeaderboard(limit || 100);
   }
+
+  /** Leaderboard ranked by the biggest single-deal win. */
+  @Get('top-wins')
+  async getTopWins(@Query('limit') limit?: number) {
+    const rows = await this.rankingService.getTopWins(limit || 100);
+    return rows.map((r, i) => ({
+      position: i + 1,
+      userId: r.userId,
+      name: r.user?.displayName ?? 'Player',
+      tier: r.rankTier,
+      highestWin: Number(r.highestWin),
+      totalWagered: Number(r.totalWagered),
+      wins: r.wins,
+    }));
+  }
 }
