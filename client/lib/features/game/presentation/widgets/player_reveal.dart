@@ -17,6 +17,9 @@ class PlayerRevealTile extends StatelessWidget {
   final bool isBanker;
   final bool isWinner;
 
+  /// True when this hand is a LOCKED auto-win (straight flush + four-of-a-kind).
+  final bool locked;
+
   /// How many rows (top→middle→bottom) to reveal so far: 0–3. Used to stage the
   /// reveal animation; defaults to all three (history / instant view).
   final int visibleRows;
@@ -33,6 +36,7 @@ class PlayerRevealTile extends StatelessWidget {
     this.isYou = false,
     this.isBanker = false,
     this.isWinner = false,
+    this.locked = false,
     this.visibleRows = 3,
     this.wonRows = const [false, false, false],
   });
@@ -46,8 +50,10 @@ class PlayerRevealTile extends StatelessWidget {
         color: AppColors.surface.withValues(alpha: 0.6),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isWinner ? AppColors.success : AppColors.glassBorder,
-          width: isWinner ? 1.5 : 1,
+          color: locked
+              ? AppColors.gold
+              : (isWinner ? AppColors.success : AppColors.glassBorder),
+          width: (locked || isWinner) ? 1.5 : 1,
         ),
       ),
       child: Column(
@@ -85,6 +91,21 @@ class PlayerRevealTile extends StatelessWidget {
                           color: AppColors.accent,
                           fontSize: 9,
                           fontWeight: FontWeight.w700)),
+                ),
+              if (locked)
+                Container(
+                  margin: const EdgeInsets.only(left: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: AppColors.gold.withValues(alpha: 0.22),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text('🔒 LOCKED',
+                      style: TextStyle(
+                          color: AppColors.gold,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800)),
                 ),
               const Spacer(),
               Text(
